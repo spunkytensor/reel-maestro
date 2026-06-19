@@ -98,7 +98,7 @@ async fn build_reference(
 ) -> Option<String> {
     if let Some(p) = character_ref {
         return match std::fs::read(p) {
-            Ok(bytes) => Some(openrouter::data_url_from_jpeg(&bytes)),
+            Ok(bytes) => Some(openrouter::data_url_from_image(&bytes)),
             Err(e) => {
                 eprintln!(
                     "  note: could not read --character-ref {}: {e}",
@@ -119,7 +119,7 @@ async fn build_reference(
     img.save(&path).ok()?;
     std::fs::read(&path)
         .ok()
-        .map(|b| openrouter::data_url_from_jpeg(&b))
+        .map(|b| openrouter::data_url_from_image(&b))
 }
 
 /// Try to generate and crop one image, retrying on soft refusals / decode errors. `cast` and

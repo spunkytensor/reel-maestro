@@ -156,7 +156,9 @@ pub struct RenderReelOptions<'a> {
     pub duck: bool,
     pub music_volume: f64,
     pub captions: Option<&'a str>,
-    pub fontsdir: &'a str,
+    /// Extra font directory for libass to search. `None` lets libass fall back to
+    /// the system font provider (fontconfig/CoreText/DirectWrite).
+    pub fontsdir: Option<&'a str>,
     pub output: &'a str,
 }
 
@@ -259,7 +261,10 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
     match captions {
         Some(ass) => {
             parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=0[cat]"));
-            parts.push(format!("[cat]subtitles={ass}:fontsdir={fontsdir}[vout]"));
+            match fontsdir {
+                Some(fd) => parts.push(format!("[cat]subtitles={ass}:fontsdir={fd}[vout]")),
+                None => parts.push(format!("[cat]subtitles={ass}[vout]")),
+            }
         }
         None => {
             parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=0[vout]"));

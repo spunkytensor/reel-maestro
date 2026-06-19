@@ -386,10 +386,24 @@ enum VideoStatus {
     Failed(String),
 }
 
-/// Build a base64 `data:` URL from JPEG bytes (used as a video first frame).
-pub fn data_url_from_jpeg(bytes: &[u8]) -> String {
+/// Build a base64 `data:` URL from image bytes, sniffing the MIME type from the
+/// magic bytes. Our own saved frames are always JPEG, but a user-supplied
+/// `--character-ref` may be PNG/WebP/GIF, and mislabeling it makes the API reject
+/// the request. Falls back to JPEG when the format isn't recognized.
+pub fn data_url_from_image(bytes: &[u8]) -> String {
+    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
     format!(
-        "data:image/jpeg;base64,{}",
+        "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
 }
@@ -459,6 +473,22 @@ mod tests {
     fn image_content_no_refs_is_plain_string() {
         let c = image_content("a cat", &[]);
         assert_eq!(c, json!("a cat"));
+    }
+
+    #[test]
+    fn data_url_sniffs_mime_from_magic_bytes() {
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0];
+        let gif = *b"GIF89a";
+        let webp = *b"RIFF\0\0\0\0WEBPVP8 ";
+        let unknown = [0x00, 0x01, 0x02, 0x03];
+
+        assert!(data_url_from_image(&png).starts_with("data:image/png;base64,"));
+        assert!(data_url_from_image(&jpeg).starts_with("data:image/jpeg;base64,"));
+        assert!(data_url_from_image(&gif).starts_with("data:image/gif;base64,"));
+        assert!(data_url_from_image(&webp).starts_with("data:image/webp;base64,"));
+        // Unrecognized bytes fall back to JPEG.
+        assert!(data_url_from_image(&unknown).starts_with("data:image/jpeg;base64,"));
     }
 
     #[test]

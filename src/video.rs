@@ -37,7 +37,7 @@ pub async fn generate(
             );
             let frame = std::fs::read(&images[i])
                 .ok()
-                .map(|b| openrouter::data_url_from_jpeg(&b));
+                .map(|b| openrouter::data_url_from_image(&b));
 
             match or
                 .generate_video(&prompt, frame.as_deref(), duration, resolution)

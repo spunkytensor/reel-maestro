@@ -71,6 +71,10 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     let audio_name = audio.file_name().unwrap().to_string_lossy().into_owned();
     let music_name = music.map(basename);
 
+    // FONTS_DIR is a Linux path; on macOS/Windows it won't exist, so only pass it
+    // when present and otherwise let libass fall back to the system font provider.
+    let fontsdir = Path::new(FONTS_DIR).exists().then_some(FONTS_DIR);
+
     let output = "reel.mp4";
     ffmpeg::render_reel(ffmpeg::RenderReelOptions {
         dir,
@@ -81,7 +85,7 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
         duck,
         music_volume,
         captions,
-        fontsdir: FONTS_DIR,
+        fontsdir,
         output,
     })?;
     Ok(dir.join(output))

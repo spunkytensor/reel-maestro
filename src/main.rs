@@ -164,6 +164,12 @@ async fn main() -> Result<()> {
 }
 
 async fn run(cli: &Cli) -> Result<()> {
+    // ffmpeg's atempo filter only accepts 0.5–2.0; reject out-of-range speeds
+    // upfront so the user gets a clear message instead of a cryptic ffmpeg error.
+    // (music_volume needs no check — it's clamped to >= 0 at the ffmpeg call.)
+    if !(0.5..=2.0).contains(&cli.speed) {
+        bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
+    }
     let cfg = Config::load(cli)?;
     let mut or = OpenRouter::new(&cfg)?;
 
@@ -403,7 +409,7 @@ async fn run(cli: &Cli) -> Result<()> {
 fn poster_refs(dir: &std::path::Path) -> Vec<String> {
     std::fs::read(dir.join("character-ref.jpg"))
         .ok()
-        .map(|b| openrouter::data_url_from_jpeg(&b))
+        .map(|b| openrouter::data_url_from_image(&b))
         .into_iter()
         .collect()
 }
@@ -492,23 +498,36 @@ fn existing_music(dir: &std::path::Path) -> Option<PathBuf> {
 
 /// Local date-time stamp `YYYYMMDD_HHMMSS` for naming output folders. Uses the system
 /// `date` command (local time); falls back to a UNIX-seconds prefix if unavailable.
+/// `YYYYMMDD_HHMMSS` (UTC) for naming output directories. Computed in pure Rust
+/// so it's portable and cheap — no `date` subprocess, identical on every OS.
 fn timestamp() -> String {
-    if let Ok(out) = std::process::Command::new("date")
-        .arg("+%Y%m%d_%H%M%S")
-        .output()
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if s.len() == 15 {
-                return s;
-            }
-        }
-    }
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    secs.to_string()
+
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let (hour, min, sec) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    let (year, month, day) = civil_from_days(days);
+
+    format!("{year:04}{month:02}{day:02}_{hour:02}{min:02}{sec:02}")
+}
+
+/// Convert days since the Unix epoch (1970-01-01) to a `(year, month, day)`
+/// civil date. Algorithm from Howard Hinnant's `civil_from_days`, valid for the
+/// proleptic Gregorian calendar across the full range we care about.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// Map a narrator gender to a Gemini TTS voice. Male → a male voice; everything else keeps
@@ -540,7 +559,15 @@ fn slug(title: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{pick_voice, poster_time};
+    use super::{civil_from_days, pick_voice, poster_time};
+
+    #[test]
+    fn civil_from_days_matches_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1)); // Unix epoch
+        assert_eq!(civil_from_days(59), (1970, 3, 1)); // 1970 not a leap year
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29)); // leap day
+        assert_eq!(civil_from_days(20_544), (2026, 4, 1));
+    }
 
     #[test]
     fn voice_follows_narrator_gender() {

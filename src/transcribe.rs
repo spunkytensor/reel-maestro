@@ -200,10 +200,20 @@ fn local_word_timings(cmd: &str, model: &str, audio: &Path) -> Result<Vec<WordTi
         bail!("`{cmd}` exited with {status}");
     }
 
-    let json = std::fs::read_dir(&out_dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.extension().is_some_and(|x| x == "json"))
-        .with_context(|| format!("`{cmd}` wrote no .json output in {}", out_dir.display()))?;
+    // `.whisper-ts` is shared across runs, so don't grab "any .json" — read the
+    // exact file whisper writes for this audio: `<out_dir>/<audio-stem>.json`.
+    // Append ".json" to the stem rather than `with_extension` so dotted names
+    // (e.g. `my.audio.wav` -> `my.audio.json`) resolve correctly.
+    let stem = audio.file_stem().context("audio path has no filename")?;
+    let mut filename = stem.to_os_string();
+    filename.push(".json");
+    let json = out_dir.join(filename);
+    if !json.exists() {
+        bail!(
+            "`{cmd}` produced no word-timing JSON at {}",
+            json.display()
+        );
+    }
     let v: Value = serde_json::from_slice(&std::fs::read(&json)?)
         .with_context(|| format!("could not parse word-timing JSON from {}", json.display()))?;
     Ok(words_from_whisper_json(&v))
