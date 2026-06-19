@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an improvement or new capability.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior, flags, docs, or workflow you want.
+    validations:
+      required: true
+  - type: dropdown
+    id: cost
+    attributes:
+      label: Would this add or change paid model/provider calls?
+      options:
+        - "No"
+        - "Yes"
+        - "Unsure"
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional context, workarounds, or related projects.

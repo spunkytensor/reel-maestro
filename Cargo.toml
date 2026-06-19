@@ -1,0 +1,23 @@
+[package]
+name = "reelmaestro"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "A simple CLI that turns an idea into a vertical TikTok-style video with AI-generated audio, images, and captions via OpenRouter."
+license = "Apache-2.0"
+repository = "https://github.com/spunkytensor/reel-maestro"
+readme = "README.md"
+keywords = ["video", "reels", "openrouter", "cli", "ai"]
+categories = ["command-line-utilities", "multimedia::video"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+base64 = "0.22"
+dotenvy = "0.15"
+futures = "0.3"

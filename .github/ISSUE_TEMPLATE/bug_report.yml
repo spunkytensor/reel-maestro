@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible problem with Reel Maestro.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not include API keys, private prompts, private media, or vulnerability details in public issues.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the exact command and relevant non-secret inputs.
+      placeholder: |
+        1. Run `reelmaestro ...`
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, ffmpeg/ffprobe version, Reel Maestro version or commit.
+      placeholder: |
+        OS:
+        rustc --version:
+        ffmpeg -version:
+        reelmaestro --version:
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Did this involve paid/network model calls?
+      options:
+        - "No"
+        - "Yes, OpenRouter/model calls were made"
+        - "Unsure"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Paste relevant output after removing secrets and private content.
+      render: text
