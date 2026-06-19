@@ -1,0 +1,21 @@
+# Rust build output
+/target/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Generated Reel Maestro output
+/out/
+
+# Local Python tooling for whisper-timestamped
+/.venv/
+
+# Editor/OS noise
+.DS_Store
+*.swp
+*.swo
+
+# Logs
+*.log
