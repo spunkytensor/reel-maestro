@@ -387,8 +387,6 @@ Please do not open public issues containing secrets or vulnerability details. Se
 - [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped) provides local
   word-level caption timestamps; [`uv`](https://docs.astral.sh/uv/) is the documented install
   path for its Python environment.
-- [`reels-af`](https://github.com/Agent-Field/reels-af) inspired the idea; Reel Maestro keeps a
-  smaller Rust CLI architecture and does not share code with that project.
 
 ## License
 
