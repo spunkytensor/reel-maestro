@@ -1,5 +1,7 @@
 # Reel Maestro
 
+[![CI](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml)
+
 <p align="center">
   <img src="logo.jpg" alt="Reel Maestro logo" width="240">
 </p>
@@ -9,7 +11,7 @@ TikTok/Reels/Shorts-style video with **AI-generated narration audio, images, and
 captions** — all through a single **OpenRouter API key**. No Docker, no server, no dashboard.
 
 This project is open source under the [Apache License 2.0](LICENSE). Contributions are
-welcome; see [Contributing.md](Contributing.md) for the development workflow.
+welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
 
 ## How it works
 
@@ -32,20 +34,64 @@ no timestamps for any model — so word timing is done locally instead.
 
 ## Requirements
 
-- Rust (stable) and Cargo.
+- Rust 1.88+ and Cargo.
 - `ffmpeg` and `ffprobe` on your PATH (`sudo apt install ffmpeg`).
 - A font for captions: defaults to **DejaVu Sans** (`fonts-dejavu`, usually preinstalled).
 - An OpenRouter API key with a little credit.
 - *(Optional, for exact captions)* [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped)
   on your PATH for real word-level timing (installed via [`uv`](https://docs.astral.sh/uv/) —
-  see Setup). Without it, the tool falls back to estimating word timings from the audio length.
+  see below). Without it, the tool falls back to estimating word timings from the audio length.
 
-## Setup
+## Supported platforms
+
+Reel Maestro is currently tested on Linux x86_64 in CI. macOS should work with `ffmpeg` and
+`ffprobe` installed, but is not CI-tested yet. Windows is not currently supported or tested.
+The full render smoke tests are Linux-oriented because they rely on the default DejaVu font path.
+
+## Install
+
+From a clone:
 
 ```bash
-cp .env.example .env      # paste your OPENROUTER_API_KEY
-cargo build --release
+git clone https://github.com/spunkytensor/reel-maestro.git
+cd reel-maestro
+cargo install --path .
+reelmaestro --help
 ```
+
+Without cloning:
+
+```bash
+cargo install --git https://github.com/spunkytensor/reel-maestro
+```
+
+For development without installing:
+
+```bash
+cargo run --release -- --topic "octopus cognition"
+```
+
+## Configuration
+
+Set your OpenRouter API key in the environment, or copy `.env.example` to `.env` when running
+from a clone:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+
+# Or, from a checkout:
+cp .env.example .env      # paste OPENROUTER_API_KEY into .env
+```
+
+## Privacy, costs, and provider terms
+
+Reel Maestro sends your topic, script/brief/article text, generated scene prompts, and requested
+media-generation inputs to OpenRouter and the selected model providers. If you pass
+`--character-ref`, that image is also sent to the image/video model. Do not use private,
+sensitive, or third-party material unless you are allowed to send it to those services.
+
+API calls may incur OpenRouter charges. Model availability, pricing, output rights, and content
+policies are governed by OpenRouter and the underlying providers.
 
 ### Optional: exact caption timing with whisper-timestamped (via uv)
 
@@ -336,8 +382,13 @@ error ⇒ the text model.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please read [Contributing.md](Contributing.md) before
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 opening a PR so local checks, generated artifacts, and license expectations stay consistent.
+
+## Security
+
+Please do not open public issues containing secrets or vulnerability details. See
+[SECURITY.md](SECURITY.md) for supported versions and private reporting guidance.
 
 ## Credits and cross-references
 

@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Small wrappers around the `ffmpeg` and `ffprobe` binaries (must be on PATH).
 
 use std::path::Path;

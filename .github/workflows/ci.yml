@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,6 +15,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check with MSRV
+        run: cargo check --locked
+
   linux:
     name: Linux checks
     runs-on: ubuntu-latest
@@ -23,7 +45,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -34,10 +56,16 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Build
         run: cargo build --locked
+
+      - name: Verify crate package
+        run: cargo package --locked
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Unit tests without OpenRouter credentials
         run: cargo test --locked
@@ -47,3 +75,49 @@ jobs:
 
       - name: CLI help smoke test
         run: cargo run --locked -- --help
+
+  supply-chain:
+    name: Rust supply-chain checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Rust security tooling
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo install cargo-deny --version 0.19.8 --locked
+
+      - name: Check dependency policy
+        run: cargo deny check
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p target/security
+          cargo cyclonedx --format json --spec-version 1.5 --override-filename reelmaestro-sbom
+          mv reelmaestro-sbom.json target/security/reelmaestro-sbom.cdx.json
+
+      - name: Audit Rust dependencies for CVEs
+        run: |
+          mkdir -p target/security
+          set +e
+          cargo audit --json > target/security/cargo-audit.json
+          status=$?
+          echo "$status" > target/security/cargo-audit.exit-code
+          exit "$status"
+
+      - name: Upload Rust security artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-security-artifacts
+          path: target/security/
+          if-no-files-found: warn

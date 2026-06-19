@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Word timings -> an ASS subtitle file with big, bottom-anchored "word-burst" captions
 //! (1-3 words at a time), sized for a 1080x1920 vertical canvas.
 

@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Reel Maestro — turn an idea into a vertical TikTok-style video with AI-generated
 //! audio, images, and captions, using a single OpenRouter API key.
 

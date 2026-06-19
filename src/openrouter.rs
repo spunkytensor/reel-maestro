@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! A thin OpenRouter HTTP client covering the calls the pipeline needs from OpenRouter:
 //! structured chat, image generation, text-to-speech, music, and video. (Caption word timings
 //! come from a local whisper-timestamped run, not OpenRouter — see `transcribe.rs`.)

@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal article fetch + HTML-to-text for `--url` mode. Deliberately dependency-free:
 //! we only need the gist, which then feeds the scriptwriter.
 

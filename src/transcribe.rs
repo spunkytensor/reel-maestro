@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! audio.mp3 -> word timings. Prefers real word-level timestamps from a local
 //! whisper-timestamped run (OpenRouter's hosted STT only returns plain text — verified across
 //! all of its transcription models). If that tool isn't installed or fails, estimates timings

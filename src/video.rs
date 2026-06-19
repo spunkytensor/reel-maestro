@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Optional AI-generated video scenes (image-to-video via Veo). Each chosen scene's still
 //! is animated into a short clip; failures fall back to `None` so the scene stays a still.
 

@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Final assembly: map each scene to a time window on the audio timeline, render a
 //! Ken Burns clip per scene, then single-pass stitch (concat + burn captions + mux audio).
 

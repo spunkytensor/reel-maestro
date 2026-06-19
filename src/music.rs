@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Optional AI-generated background soundtrack (e.g. Lyria 3 via OpenRouter).
 
 use std::path::{Path, PathBuf};

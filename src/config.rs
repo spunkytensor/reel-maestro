@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Resolves runtime configuration: CLI flag > environment variable > built-in default.
 
 use anyhow::{Context, Result};

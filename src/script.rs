@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Turns a topic, an article, or a finished narration into a `Script`
 //! (title + narration + scene image prompts) via one structured LLM call.
 

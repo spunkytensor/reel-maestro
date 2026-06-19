@@ -3,6 +3,8 @@
 Thanks for helping improve Reel Maestro. This project aims to stay easy to run: one Rust CLI,
 local media tooling, and a single OpenRouter API key for model calls.
 
+The minimum supported Rust version is 1.88, as declared in `Cargo.toml`.
+
 ## Before you start
 
 - Open an issue for large behavior changes so the approach can be discussed first.
@@ -23,17 +25,21 @@ cargo build
 Install local runtime tools as needed:
 
 - `ffmpeg` and `ffprobe` for render-path tests and actual video assembly.
-- Optional: `whisper-timestamped` for exact word-level caption timing. See the README setup
-  instructions for the `uv`-based installation path.
+- Optional: `whisper-timestamped` for exact word-level caption timing. See the README's
+  `whisper-timestamped` section for the `uv`-based installation path.
 
 ## Local checks
 
 Run the cheap checks before opening a PR:
 
 ```bash
-cargo fmt --check
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo deny check
 cargo test
 cargo build
+cargo package --locked
 cargo run -- --help
 ```
 
@@ -48,6 +54,26 @@ cargo test video_mode_smoke -- --ignored --nocapture
 
 End-to-end runs call paid model APIs. Only run them intentionally, with your own
 `OPENROUTER_API_KEY`, and note that they may incur charges.
+
+## Security artifacts
+
+CI runs Rust dependency policy checks and uploads two supply-chain artifacts on every run:
+
+- `cargo-audit.json` — RustSec/CVE audit output from `cargo audit --json`.
+- `reelmaestro-sbom.cdx.json` — CycloneDX 1.5 SBOM from `cargo cyclonedx`.
+
+To reproduce locally:
+
+```bash
+cargo install cargo-audit --version 0.22.2 --locked
+cargo install cargo-cyclonedx --version 0.5.9 --locked
+cargo install cargo-deny --version 0.19.8 --locked
+mkdir -p target/security
+cargo deny check
+cargo audit --json > target/security/cargo-audit.json
+cargo cyclonedx --format json --spec-version 1.5 --override-filename reelmaestro-sbom
+mv reelmaestro-sbom.json target/security/reelmaestro-sbom.cdx.json
+```
 
 ## Code style
 

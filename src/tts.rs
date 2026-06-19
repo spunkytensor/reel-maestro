@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Narration -> audio.mp3 (one TTS call), with optional pitch-preserving tempo change.
 
 use std::path::Path;

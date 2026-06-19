@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared data types passed between pipeline stages.
 
 use serde::{Deserialize, Serialize};

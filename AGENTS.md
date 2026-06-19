@@ -14,6 +14,7 @@ timing, image generation, optional music/video generation, and local ffmpeg asse
 - Do not run live OpenRouter/API workflows unless the user explicitly asks; they can cost money.
 - Never commit or print real API keys. `.env` is local only; `.env.example` is the public template.
 - Reel Maestro-specific environment variables use the `REELMAESTRO_*` prefix.
+- The minimum supported Rust version is 1.88, as declared in `Cargo.toml`; keep CI and docs in sync.
 - Generated media belongs in `out/` or a temp directory, not in source control.
 - Keep cross-references and attribution current when adding third-party code, prompts, assets, or
   documentation.
@@ -21,11 +22,19 @@ timing, image generation, optional music/video generation, and local ffmpeg asse
 ## Common commands
 
 ```bash
-cargo fmt --check
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo deny check
 cargo test
 cargo build
+cargo package --locked
 cargo run -- --help
 ```
+
+Use `cargo fmt --all` to format the entire workspace before handing work back. Use
+`cargo fmt --all --check` only when verifying that formatting is already correct, such as in
+CI. Do not manually reflow Rust code that `rustfmt` can format.
 
 Ignored render-path checks require `ffmpeg`/`ffprobe` and produce temporary media:
 
@@ -47,4 +56,17 @@ cargo test video_mode_smoke -- --ignored --nocapture
 ## Documentation expectations
 
 When user-facing flags, env vars, costs, output files, or release processes change, update
-`README.md`, `.env.example`, and `Contributing.md` as applicable.
+`README.md`, `.env.example`, and `CONTRIBUTING.md` as applicable.
+
+CI also checks dependency policy with `cargo deny check` and generates Rust supply-chain artifacts
+with `cargo audit --json` and `cargo cyclonedx --format json --spec-version 1.5`; keep those
+workflow commands in sync with `CONTRIBUTING.md` if the tooling changes.
+
+## Rust source headers
+
+Every Rust source file should start with:
+
+```rust
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+```

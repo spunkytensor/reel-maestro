@@ -1,3 +1,6 @@
+// Copyright 2026 Spunky Tensor
+// SPDX-License-Identifier: Apache-2.0
+
 //! Scene prompts -> 1080x1920 JPEG stills. Runs generations concurrently (bounded) and
 //! falls back to a solid placeholder frame so one bad generation never kills the run.
 
