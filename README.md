@@ -368,18 +368,6 @@ error ⇒ the text model.
 > Tip: `--no-images` runs only script + TTS + word timing and stops, so you can check
 > caption timing for a couple of cents without paying for images.
 
-## Notes
-
-- Inspired by the [`reels-af`](https://github.com/Agent-Field/reels-af) Python project, but
-  deliberately stripped down to a single CLI.
-- Word timing runs `whisper_timestamped` locally (`<audio> --model <m> --output_format json`)
-  and reads back `segments[].words[]`. OpenRouter's hosted `/audio/transcriptions` endpoint
-  was verified to return plain `text` + `usage` only — **no** word/segment timestamps for any
-  of its transcription models, and it rejects multipart uploads — so it can't drive caption
-  timing. If `whisper_timestamped` isn't on PATH (or errors), Reel Maestro **estimates** word
-  timings from the audio duration (weighting by syllable count) so captions still sync —
-  approximately rather than exactly.
-
 ## Contributing
 
 Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
