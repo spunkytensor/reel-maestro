@@ -57,7 +57,7 @@ fn html_to_text(html: &str) -> String {
             '<' => in_tag = true,
             '>' => in_tag = false,
             _ if !in_tag => out.push(c), // outside a tag → keep visible text
-            _ => {}                       // inside a tag → drop
+            _ => {}                      // inside a tag → drop
         }
     }
 
@@ -109,16 +109,13 @@ fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     }
     // Only try positions that begin a UTF-8 character, so the returned index is always a valid
     // char boundary (safe to slice at). At each candidate, compare the next N folded bytes.
-    haystack
-        .char_indices()
-        .map(|(idx, _)| idx)
-        .find(|&idx| {
-            haystack[idx..]
-                .bytes()
-                .map(|b| b.to_ascii_lowercase())
-                .take(needle_lower.len())
-                .eq(needle_lower.iter().copied())
-        })
+    haystack.char_indices().map(|(idx, _)| idx).find(|&idx| {
+        haystack[idx..]
+            .bytes()
+            .map(|b| b.to_ascii_lowercase())
+            .take(needle_lower.len())
+            .eq(needle_lower.iter().copied())
+    })
 }
 
 #[cfg(test)]

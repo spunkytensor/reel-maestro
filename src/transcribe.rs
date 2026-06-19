@@ -217,10 +217,7 @@ fn local_word_timings(cmd: &str, model: &str, audio: &Path) -> Result<Vec<WordTi
     filename.push(".json");
     let json = out_dir.join(filename);
     if !json.exists() {
-        bail!(
-            "`{cmd}` produced no word-timing JSON at {}",
-            json.display()
-        );
+        bail!("`{cmd}` produced no word-timing JSON at {}", json.display());
     }
     let v: Value = serde_json::from_slice(&std::fs::read(&json)?)
         .with_context(|| format!("could not parse word-timing JSON from {}", json.display()))?;
