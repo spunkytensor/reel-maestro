@@ -13,6 +13,8 @@ captions** — all through a single **OpenRouter API key**. No Docker, no server
 This project is open source under the [Apache License 2.0](LICENSE). Contributions are
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
 
+See https://www.youtube.com/@ReelMaestroSamples for examples of reels created with this project, including sample prompts.
+
 ## How it works
 
 ```
