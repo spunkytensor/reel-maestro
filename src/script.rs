@@ -11,6 +11,11 @@ use serde_json::{json, Value};
 use crate::model::{Scene, Script};
 use crate::openrouter::OpenRouter;
 
+/// System prompt shared by every script-generation entry point. It pins the format (length,
+/// scene count, the requirement that each scene `line` be an exact in-order substring of the
+/// narration so chunks reconcile against the audio), and asks for the auxiliary fields the rest of
+/// the pipeline consumes: `image_prompt` (images.rs), `music_prompt` (music.rs), `cast`
+/// (character consistency), `poster_prompt` (thumbnail), and `narrator_gender` (voice pick).
 const STYLE: &str = "\
 You write punchy short-form vertical (9:16) video scripts for TikTok/Reels.\n\
 Rules:\n\
@@ -36,6 +41,9 @@ broad appeal, vertical 9:16, no text or logos in the image. Feature the recurrin
 \"neutral\". Base it on the protagonist or tone (a story centered on a boy or man → \"male\"; a girl \
 or woman → \"female\"; otherwise \"neutral\").";
 
+/// JSON Schema for a from-scratch script (topic/brief/article): the model writes the `narration`
+/// too. Passed to the LLM as a structured-output constraint so the reply deserializes straight
+/// into [`Script`]. `additionalProperties: false` keeps the model from inventing extra fields.
 fn full_schema() -> Value {
     json!({
         "type": "object",
@@ -64,7 +72,9 @@ fn full_schema() -> Value {
     })
 }
 
-/// Scenes-only schema, used when the narration is fixed (user-supplied).
+/// Scenes-only schema, used when the narration is fixed (user-supplied). Identical to
+/// [`full_schema`] minus the `narration` field — the model only plans a title and scenes over
+/// text it must not rewrite. Deserializes into [`ScenesOnly`].
 fn scenes_schema() -> Value {
     json!({
         "type": "object",
@@ -92,6 +102,8 @@ fn scenes_schema() -> Value {
     })
 }
 
+/// Deserialization target for [`scenes_schema`] — every `Script` field except `narration`, which
+/// the caller supplies verbatim. Reassembled into a full [`Script`] in [`from_narration`].
 #[derive(Deserialize)]
 struct ScenesOnly {
     title: String,

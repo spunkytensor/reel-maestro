@@ -24,9 +24,15 @@ pub struct Speech {
 /// Generated music audio, tagged with its container format.
 pub struct MusicTrack {
     pub bytes: Vec<u8>,
+    /// Container format of `bytes` (always "wav" today — see `generate_music`).
     pub format: String,
 }
 
+/// The shared OpenRouter client. Holds one reusable `reqwest::Client` plus the resolved model
+/// IDs and voice for this run, so every call site routes to the models the user configured
+/// without re-reading `Config`. Construct once via `new` and pass it (by reference) through the
+/// pipeline. `voice` is `pub` because `main.rs` may overwrite it after auto-picking from the
+/// script's narrator gender.
 pub struct OpenRouter {
     http: reqwest::Client,
     api_key: String,
@@ -39,6 +45,9 @@ pub struct OpenRouter {
 }
 
 impl OpenRouter {
+    /// Build the client from resolved config. The HTTP client carries a generous 300s timeout
+    /// because image/TTS/music generations are slow; video uses its own polling loop instead.
+    /// `voice` defaults to "Kore" (a warm female voice) when none was configured.
     pub fn new(cfg: &Config) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -55,6 +64,9 @@ impl OpenRouter {
         })
     }
 
+    /// Start a POST to `{BASE}{path}` with auth and the OpenRouter attribution headers
+    /// (`HTTP-Referer`/`X-Title`) every call shares. Returns the builder so callers attach
+    /// their own JSON body. The `Authorization: Bearer` header carries the API key.
     fn post(&self, path: &str) -> reqwest::RequestBuilder {
         self.http
             .post(format!("{BASE}{path}"))
@@ -161,6 +173,8 @@ impl OpenRouter {
         }
     }
 
+    /// One TTS attempt at a specific `response_format` ("mp3" or "pcm"). Surfaces a non-2xx
+    /// response as an error so `text_to_speech` can fall back to the other format.
     async fn tts_request(&self, text: &str, response_format: &str) -> Result<Vec<u8>> {
         let body = json!({
             "model": self.tts_model,
@@ -301,6 +315,9 @@ impl OpenRouter {
         bail!("video job timed out after {} minutes", max_polls * 20 / 60)
     }
 
+    /// Submit one video job and return the URL to poll for its result. Always requests a
+    /// vertical 9:16 clip with no model-generated audio (we mix our own narration/music later).
+    /// When `first_frame` is set it's attached as the clip's first frame for image-to-video.
     async fn submit_video(
         &self,
         prompt: &str,
@@ -334,6 +351,9 @@ impl OpenRouter {
         Ok(format!("{BASE}/videos/{id}"))
     }
 
+    /// Poll a video job once and map its provider status to our `VideoStatus`. Terminal
+    /// success yields a content URL (preferring `unsigned_urls[0]`, else one built from the
+    /// job id); any not-yet-terminal status maps to `Pending` so the caller keeps polling.
     async fn poll_video(&self, polling_url: &str) -> Result<VideoStatus> {
         let resp = self
             .http
@@ -362,6 +382,7 @@ impl OpenRouter {
         }
     }
 
+    /// Download the finished MP4 bytes from a completed job's content URL.
     async fn download_video(&self, content_url: &str) -> Result<Vec<u8>> {
         let resp = self
             .http
@@ -380,6 +401,8 @@ impl OpenRouter {
     }
 }
 
+/// The outcome of a single video-job poll: still running, finished (with the content URL to
+/// download), or terminally failed (with the provider's error message).
 enum VideoStatus {
     Pending,
     Done(String),
@@ -434,6 +457,9 @@ fn collect_audio_fragments(v: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Read a response as JSON, turning a non-2xx status into an error that includes the body.
+/// We read the body as text first so failures surface OpenRouter's message instead of an
+/// opaque parse error. Shared by every non-streaming call.
 async fn json_or_err(resp: reqwest::Response) -> Result<Value> {
     let status = resp.status();
     let text = resp.text().await?;
@@ -443,6 +469,7 @@ async fn json_or_err(resp: reqwest::Response) -> Result<Value> {
     serde_json::from_str(&text).with_context(|| format!("invalid JSON from OpenRouter: {text}"))
 }
 
+/// Decode the base64 payload of a `data:<mime>;base64,<payload>` URL into raw bytes.
 fn decode_data_url(url: &str) -> Result<Vec<u8>> {
     // Expected form: data:image/png;base64,<payload>
     let comma = url

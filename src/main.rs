@@ -496,10 +496,9 @@ fn existing_music(dir: &std::path::Path) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// Local date-time stamp `YYYYMMDD_HHMMSS` for naming output folders. Uses the system
-/// `date` command (local time); falls back to a UNIX-seconds prefix if unavailable.
-/// `YYYYMMDD_HHMMSS` (UTC) for naming output directories. Computed in pure Rust
-/// so it's portable and cheap — no `date` subprocess, identical on every OS.
+/// Date-time stamp `YYYYMMDD_HHMMSS` (UTC) used to prefix output folder names so runs sort
+/// chronologically and never collide. Computed in pure Rust from the system clock — no `date`
+/// subprocess — so it's portable and produces identical output on every OS.
 fn timestamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

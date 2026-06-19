@@ -13,11 +13,10 @@ use image::{imageops, Rgb, RgbImage};
 use crate::model::Scene;
 use crate::openrouter::{self, OpenRouter};
 
-const W: u32 = 1080;
-const H: u32 = 1920;
-const MAX_CONCURRENT: usize = 4;
-
-const MAX_ATTEMPTS: usize = 3;
+const W: u32 = 1080; // final canvas width  (9:16 vertical)
+const H: u32 = 1920; // final canvas height (9:16 vertical)
+const MAX_CONCURRENT: usize = 4; // in-flight image generations — caps load on the API/our memory
+const MAX_ATTEMPTS: usize = 3; // per-image retries before falling back to a placeholder
 
 /// Generate one image per scene into `dir`, returning their paths in scene order.
 ///

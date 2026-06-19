@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Small wrappers around the `ffmpeg` and `ffprobe` binaries (must be on PATH).
+//!
+//! Reel Maestro shells out to the system ffmpeg/ffprobe rather than linking a media library:
+//! it keeps the build dependency-light and lets users upgrade codecs independently. Everything
+//! here is a thin command-builder — the interesting media logic lives in the filtergraph
+//! strings (especially `render_reel`), which are documented inline where they're built.
 
 use std::path::Path;
 use std::process::Command;
@@ -9,6 +14,10 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 /// Run ffmpeg with the given args; fail loudly with stderr if it errors.
+///
+/// Every call gets `-y` (overwrite output without prompting — we own the run folder) and
+/// `-loglevel error` (suppress ffmpeg's banner/progress chatter; only real errors reach us,
+/// which we then surface verbatim on failure).
 fn run_ffmpeg(args: &[&str]) -> Result<()> {
     let out = Command::new("ffmpeg")
         .args(["-y", "-loglevel", "error"])
@@ -29,6 +38,8 @@ pub fn duration_s(path: &Path) -> Result<f64> {
             "error",
             "-show_entries",
             "format=duration",
+            // `csv=p=0` prints just the bare value (no "duration=" key prefix), so stdout is a
+            // single float we can parse directly.
             "-of",
             "csv=p=0",
         ])
@@ -142,23 +153,37 @@ pub fn embed_poster(dir: &Path, reel: &str, poster: &str) -> Result<()> {
 }
 
 /// A scene's visual source: a still (animated with Ken Burns) or a pre-made video clip.
+/// Each variant carries the filename (relative to the render working dir) of its source.
 pub enum SceneMedia {
+    /// A generated still image, panned/zoomed (Ken Burns) to add motion.
     Still(String),
+    /// A pre-rendered video clip (e.g. an AI image-to-video scene), used as-is.
     Clip(String),
 }
 
+/// Everything `render_reel` needs to build the final MP4 in one ffmpeg pass. Grouped into a
+/// struct so the long call site reads as named fields rather than a wall of positional args.
 pub struct RenderReelOptions<'a> {
+    /// Working directory for the render; all relative filenames below resolve against it.
     pub dir: &'a Path,
+    /// One visual source per scene, in order.
     pub media: &'a [SceneMedia],
+    /// On-screen seconds for each scene (same length/order as `media`).
     pub durations: &'a [f64],
+    /// Narration audio filename — the timeline the video is cut to.
     pub audio: &'a str,
+    /// Optional background soundtrack filename, looped to cover the whole reel.
     pub music: Option<&'a str>,
+    /// When `true`, sidechain-duck the music under speech; otherwise hold it at a fixed low level.
     pub duck: bool,
+    /// Music gain (0.0–1.0+); clamped to >= 0 at the filter.
     pub music_volume: f64,
+    /// Optional `.ass` subtitle filename to burn captions in; `None` leaves the video clean.
     pub captions: Option<&'a str>,
     /// Extra font directory for libass to search. `None` lets libass fall back to
     /// the system font provider (fontconfig/CoreText/DirectWrite).
     pub fontsdir: Option<&'a str>,
+    /// Output MP4 filename to write.
     pub output: &'a str,
 }
 
@@ -299,6 +324,14 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         format!("{n}:a")
     };
 
+    // Final mux/encode. Stream selection plus broadly-compatible delivery settings:
+    //   libx264 + yuv420p   — H.264 in the pixel format every phone/browser can decode.
+    //   preset veryfast/crf 20 — fast encode at visually-lossless quality for short reels.
+    //   aac 192k / 44.1kHz  — standard audio for MP4.
+    //   -shortest           — end the file when the shortest mapped stream ends (the narration
+    //                         clock), so a looped soundtrack can't run past the visuals.
+    //   +faststart          — move the moov atom to the front so the MP4 streams/previews
+    //                         without a full download (important for social platforms).
     let filter = parts.join(";");
     args.extend(
         [

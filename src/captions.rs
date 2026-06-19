@@ -6,12 +6,16 @@
 
 use crate::model::WordTiming;
 
-const MAX_WORDS_PER_CARD: usize = 3;
+const MAX_WORDS_PER_CARD: usize = 3; // keep cards short enough to read at a glance
 const MAX_GAP_S: f64 = 0.2; // start a new card when the silence between words exceeds this
-const FONT: &str = "DejaVu Sans";
-const FONT_SIZE: u32 = 96;
+const FONT: &str = "DejaVu Sans"; // ships with the ffmpeg/libass image used to render
+const FONT_SIZE: u32 = 96; // large, in PlayRes (1080-wide) units, for thumb-readable text
 
-/// Build a complete `.ass` document for the given word timings.
+/// Build a complete `.ass` (Advanced SubStation Alpha) document for the given word timings.
+///
+/// The result is one `[Script Info]`/`[V4+ Styles]` header followed by one `Dialogue:` line per
+/// caption card. ffmpeg's `subtitles`/libass filter burns it into the video. An empty `words`
+/// slice yields just the header (a valid file with no captions).
 pub fn build_ass(words: &[WordTiming]) -> String {
     let mut s = String::new();
     s.push_str(&header());
@@ -22,17 +26,24 @@ pub fn build_ass(words: &[WordTiming]) -> String {
     s
 }
 
+/// One on-screen caption "burst": the text to show and the wall-clock window it's visible for.
+/// `start_s`/`end_s` come straight from the first/last word's timings so captions stay locked to
+/// the spoken audio.
 struct Card {
     text: String,
     start_s: f64,
     end_s: f64,
 }
 
-/// Group consecutive words into short caption cards.
+/// Group consecutive words into short caption cards (1–3 words each), flushing the current run
+/// whenever it hits the word cap, ends on clause punctuation, or is followed by a noticeable
+/// pause. This produces the snappy "word burst" rhythm rather than long static subtitle lines.
 fn pack_cards(words: &[WordTiming]) -> Vec<Card> {
     let mut cards = Vec::new();
     let mut cur: Vec<&WordTiming> = Vec::new();
 
+    // Emit the accumulated words as one card (spanning their combined time window) and reset.
+    // Text is upper-cased here so casing is consistent regardless of how whisper transcribed it.
     let flush = |cur: &mut Vec<&WordTiming>, cards: &mut Vec<Card>| {
         if cur.is_empty() {
             return;
@@ -56,10 +67,12 @@ fn pack_cards(words: &[WordTiming]) -> Vec<Card> {
         let at_cap = cur.len() >= MAX_WORDS_PER_CARD;
         let clause_end = w.word.ends_with([',', '.', '!', '?', ';', '—']);
         let gap_next = words
-            .get(i + 1)
+            .get(i + 1) // no next word on the last iteration → no gap-triggered flush
             .map(|n| n.start_s - w.end_s > MAX_GAP_S)
             .unwrap_or(false);
 
+        // The `cur.len() >= 2` guard on clause_end avoids breaking after a single word that just
+        // happens to end in punctuation (e.g. "Wait,") — those read better grouped with neighbours.
         if at_cap || (clause_end && cur.len() >= 2) || gap_next {
             flush(&mut cur, &mut cards);
         }
@@ -68,6 +81,12 @@ fn pack_cards(words: &[WordTiming]) -> Vec<Card> {
     cards
 }
 
+/// The fixed ASS header: declares the 1080x1920 canvas and a single `Burst` style.
+///
+/// The `Style:` line encodes the caption look (libass field order, see the `Format:` line above
+/// it): white fill + black outline (ASS colours are `&HAABBGGRR`), Bold (-1), 6px outline with no
+/// shadow, Alignment 2 (bottom-centre), and `MarginV 520` to lift the text well above the very
+/// bottom edge so it clears phone UI / safe areas on the vertical canvas.
 fn header() -> String {
     format!(
         "[Script Info]\n\
@@ -83,6 +102,8 @@ fn header() -> String {
     )
 }
 
+/// Render one card as an ASS `Dialogue:` event on layer 0 using the `Burst` style. The middle
+/// zero fields are per-event margin overrides (0 = inherit the style's margins).
 fn dialogue(card: &Card) -> String {
     format!(
         "Dialogue: 0,{},{},Burst,,0,0,0,,{}",

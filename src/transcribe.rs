@@ -21,6 +21,14 @@ use crate::config::Config;
 use crate::ffmpeg;
 use crate::model::WordTiming;
 
+/// Produce word-level caption timings for `audio`, using `narration` as the authoritative text.
+///
+/// Strategy (see the module docs): run local whisper-timestamped for real timestamps and
+/// re-text its tokens with the narration spelling; if whisper is missing, errors, or returns
+/// nothing, fall back to estimating timings purely from the audio length. The resulting
+/// timings are also written to `debug_out` (the run's `words.json`) so resumed runs can reuse
+/// them and so the timing is inspectable. Never fails the pipeline for caption reasons — a
+/// whisper problem degrades to estimation rather than erroring out.
 pub fn word_timings(
     cfg: &Config,
     audio: &Path,

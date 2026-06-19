@@ -1,8 +1,21 @@
 // Copyright 2026 Spunky Tensor
 // SPDX-License-Identifier: Apache-2.0
 
-//! Final assembly: map each scene to a time window on the audio timeline, render a
-//! Ken Burns clip per scene, then single-pass stitch (concat + burn captions + mux audio).
+//! Final assembly stage of the pipeline.
+//!
+//! By the time we get here every input asset already exists on disk: the narration
+//! `audio.mp3`, one still image per scene, and optionally an AI video clip per scene
+//! plus a background music track. This module's job is to glue them into the finished
+//! `reel.mp4`:
+//!   1. Divide the audio timeline into one window per scene, proportional to how many
+//!      narration words that scene speaks (so the visuals track the voiceover).
+//!   2. Write the burned-in subtitle file (`reel.ass`) from the word timings.
+//!   3. Hand the per-scene media + durations to `ffmpeg::render_reel`, which does the
+//!      heavy lifting in a single pass: Ken Burns pan/zoom on stills, concat of all
+//!      scenes, caption burn-in, and the narration/music audio mix.
+//!
+//! The actual ffmpeg filtergraph construction lives in `ffmpeg.rs`; this module owns the
+//! scene-timing math and decides *which* asset (clip vs. still) represents each scene.
 
 use std::path::{Path, PathBuf};
 
@@ -12,18 +25,33 @@ use crate::captions;
 use crate::ffmpeg;
 use crate::model::{Scene, WordTiming};
 
+/// Where DejaVu ships on Debian/Ubuntu. libass needs a fonts directory to render captions;
+/// on Linux we point it here, and on macOS/Windows (where this path is absent) we fall back
+/// to the OS font provider instead — see the `fontsdir` handling in `build`.
 const FONTS_DIR: &str = "/usr/share/fonts/truetype/dejavu";
 
+/// Everything `build` needs to assemble the reel. Borrowed (not owned) because the caller
+/// already holds all of these and assembly is a single synchronous pass.
 pub struct BuildOptions<'a> {
+    /// Run folder. All inputs live here and `reel.mp4` / `reel.ass` are written here.
     pub dir: &'a Path,
+    /// The scenes, in order. Used for per-scene word counts (timing) — not the text itself.
     pub scenes: &'a [Scene],
+    /// One still image per scene, parallel to `scenes`. Always present (the Ken Burns fallback).
     pub images: &'a [PathBuf],
+    /// Optional AI video clip per scene, parallel to `scenes`. `Some` wins over the still.
     pub clips: &'a [Option<PathBuf>],
+    /// Word-level timings used to build the caption file. Empty ⇒ no captions written.
     pub words: &'a [WordTiming],
+    /// The narration track; its total duration defines the length of the whole reel.
     pub audio: &'a Path,
+    /// Optional background soundtrack mixed under the narration.
     pub music: Option<&'a Path>,
+    /// `true` = sidechain-duck the music under speech; `false` = hold it at a constant low level.
     pub duck: bool,
+    /// Music gain multiplier (≥ 0). Higher is louder.
     pub music_volume: f64,
+    /// Master switch for burning captions. When `false` no subtitle file is produced.
     pub captions_on: bool,
 }
 
@@ -46,9 +74,12 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     if images.is_empty() {
         bail!("no scene images to assemble");
     }
+    // Slice the audio timeline into one duration per scene (see `scene_durations`).
     let durations = scene_durations(scenes, audio)?;
 
-    // Write captions only when enabled and there are timed words to show.
+    // Write captions only when enabled and there are timed words to show. The returned
+    // `Some(name)` signals render_reel to burn this ASS file in; `None` skips the subtitles
+    // filter entirely (e.g. silent/no-narration reels have no words to caption).
     let ass_name = "reel.ass";
     let captions = if captions_on && !words.is_empty() {
         std::fs::write(dir.join(ass_name), captions::build_ass(words))?;
@@ -57,7 +88,9 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
         None
     };
 
-    // Each scene is either an AI video clip (if produced) or its Ken Burns still.
+    // Decide each scene's visual source: an AI video clip if one was produced for that
+    // index, otherwise its still (which render_reel animates with Ken Burns). render_reel
+    // works in `dir`, so we pass bare file names rather than full paths.
     let basename = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
     let media: Vec<ffmpeg::SceneMedia> = images
         .iter()
@@ -91,8 +124,10 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     Ok(dir.join(output))
 }
 
-/// Per-scene durations: each scene's slice of the audio timeline (proportional to its
-/// narration word count). Exposed so the video step can size Veo clips to match.
+/// Per-scene durations in seconds, each scene's slice of the audio timeline (proportional to
+/// its narration word count). Every duration is floored at 0.5s so a one-word scene still gets
+/// a visible beat. Exposed (not private) so the video step can size its Veo clips to match the
+/// exact slot each scene will occupy in the final reel.
 pub fn scene_durations(scenes: &[Scene], audio: &Path) -> Result<Vec<f64>> {
     let total = ffmpeg::duration_s(audio)?;
     Ok(scene_windows(scenes, total)
@@ -101,9 +136,16 @@ pub fn scene_durations(scenes: &[Scene], audio: &Path) -> Result<Vec<f64>> {
         .collect())
 }
 
-/// Assign each scene a [start, end] window over the total audio duration, proportional
-/// to its narration word count. The final scene always runs to the end of the audio.
+/// Assign each scene a `[start, end)` window (in seconds) over the total audio duration,
+/// proportional to its narration word count — so a scene that speaks twice as many words gets
+/// roughly twice the screen time, keeping visuals loosely in sync with the voiceover.
+///
+/// Boundaries are computed from the *cumulative* word count rather than by summing per-scene
+/// durations, so rounding never drifts and adjacent windows always meet exactly. The final
+/// scene is pinned to `total` so the visuals cover the audio to the very end with no gap.
 fn scene_windows(scenes: &[Scene], total: f64) -> Vec<(f64, f64)> {
+    // Word count per scene; `.max(1)` guarantees a blank/empty line still claims a share
+    // (and avoids a divide-by-zero if every line were empty).
     let counts: Vec<usize> = scenes
         .iter()
         .map(|s| s.line.split_whitespace().count().max(1))
@@ -111,12 +153,13 @@ fn scene_windows(scenes: &[Scene], total: f64) -> Vec<(f64, f64)> {
     let sum: usize = counts.iter().sum();
 
     let mut windows = Vec::with_capacity(scenes.len());
-    let mut cum = 0usize;
+    let mut cum = 0usize; // words consumed by all preceding scenes
     for (i, &c) in counts.iter().enumerate() {
+        // Fraction of the timeline up to this scene's start = words before it / total words.
         let start = total * (cum as f64) / (sum as f64);
         cum += c;
         let end = if i == scenes.len() - 1 {
-            total
+            total // pin the last scene to the end so visuals fully cover the audio
         } else {
             total * (cum as f64) / (sum as f64)
         };

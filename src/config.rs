@@ -7,8 +7,13 @@ use anyhow::{Context, Result};
 
 use crate::Cli;
 
+/// Fully resolved settings for one run. Every field has already been collapsed from the
+/// CLI-flag > env-var > default precedence (see `load`), so the rest of the program reads
+/// concrete values and never touches the environment again.
 pub struct Config {
+    /// OpenRouter API key (required; the only setting with no default).
     pub api_key: String,
+    /// Model IDs routed to OpenRouter for each generation step.
     pub text_model: String,
     pub image_model: String,
     pub tts_model: String,
@@ -29,10 +34,13 @@ pub struct Config {
 }
 
 impl Config {
+    /// Resolve every setting for this run. The API key is mandatory and fails fast if missing;
+    /// everything else falls back through env var to a built-in default.
     pub fn load(cli: &Cli) -> Result<Config> {
         let api_key = std::env::var("OPENROUTER_API_KEY")
             .context("OPENROUTER_API_KEY is not set (put it in a .env file or your environment)")?;
 
+        // Apply the precedence `CLI flag > env var > default` for one string setting.
         let pick = |flag: &Option<String>, env: &str, default: &str| -> String {
             flag.clone()
                 .or_else(|| std::env::var(env).ok())

@@ -6,9 +6,16 @@
 
 use anyhow::{Context, Result};
 
+/// Fetch `url` and return its main text content as a single, whitespace-collapsed string.
+///
+/// This is the entry point for `--url` mode: the returned text is handed to the scriptwriter
+/// (`script::from_article`), so it only needs to be "good enough" prose — we deliberately skip
+/// a real HTML parser and just strip tags (see [`html_to_text`]). Errors are surfaced with
+/// context for the network fetch, a non-2xx status, and body decoding.
 pub async fn fetch_article(url: &str) -> Result<String> {
     // Many sites (e.g. Wikipedia, per Wikimedia's User-Agent policy) reject
-    // requests without a browser-like User-Agent with 403, so set one.
+    // requests without a browser-like User-Agent with 403, so set one. The UA is built from
+    // Cargo package metadata at compile time so it stays accurate across version bumps.
     let client = reqwest::Client::builder()
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
@@ -30,42 +37,59 @@ pub async fn fetch_article(url: &str) -> Result<String> {
     Ok(html_to_text(&html))
 }
 
+/// Crudely convert an HTML document to plain text.
+///
+/// This is intentionally a heuristic, not a parser: we (1) delete `<script>`/`<style>` blocks
+/// whose *contents* would otherwise leak into the text, (2) drop everything between `<` and `>`
+/// to strip the remaining tags, and (3) collapse runs of whitespace and truncate. The result is
+/// noisy (no entity decoding, nav/boilerplate kept) but the downstream LLM tolerates that, and
+/// avoiding an HTML-parser dependency keeps the binary small.
 fn html_to_text(html: &str) -> String {
+    // Remove tag *bodies* first — a plain tag strip would keep the JS/CSS source as text.
     let without_scripts = remove_blocks(html, "script");
     let cleaned = remove_blocks(&without_scripts, "style");
 
+    // Strip the remaining tags by skipping any character between `<` and `>`.
     let mut out = String::new();
     let mut in_tag = false;
     for c in cleaned.chars() {
         match c {
             '<' => in_tag = true,
             '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
+            _ if !in_tag => out.push(c), // outside a tag → keep visible text
+            _ => {}                       // inside a tag → drop
         }
     }
 
-    // Collapse whitespace and cap length so the prompt stays cheap.
+    // Collapse whitespace (HTML is full of newlines/indentation) and cap length so the prompt
+    // stays cheap; 12k chars is plenty of gist for the scriptwriter.
     let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.chars().take(12_000).collect()
 }
 
 /// Remove `<tag ...> ... </tag>` blocks (case-insensitive), used to drop scripts/styles.
+///
+/// Walks `input` left to right, copying text up to each opening tag and skipping everything
+/// through the matching close tag. `open` is matched as `<tag` (no `>`) so it catches tags with
+/// attributes like `<script src=...>`. An unterminated block (open with no close) drops the
+/// remainder of the document, which is the safe choice for stripping unwanted content.
 fn remove_blocks(input: &str, tag: &str) -> String {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
     let mut out = String::new();
-    let mut i = 0;
+    let mut i = 0; // byte cursor into `input`
     while i < input.len() {
+        // `rel` is relative to the `i..` slice, so add `i` back to get an absolute offset.
         if let Some(rel) = find_case_insensitive(&input[i..], &open) {
             let start = i + rel;
-            out.push_str(&input[i..start]);
+            out.push_str(&input[i..start]); // keep text before the opening tag
             match find_case_insensitive(&input[start..], &close) {
+                // Jump the cursor past the close tag, discarding the block in between.
                 Some(end_rel) => i = start + end_rel + close.len(),
                 None => break, // unterminated; drop the rest
             }
         } else {
-            out.push_str(&input[i..]);
+            out.push_str(&input[i..]); // no more blocks — copy the tail verbatim
             break;
         }
     }
@@ -78,10 +102,13 @@ fn remove_blocks(input: &str, tag: &str) -> String {
 /// are ASCII, so ASCII case folding is sufficient and avoids the byte-length
 /// drift that full Unicode `to_lowercase()` can introduce.
 fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    // Pre-fold the needle to lowercase ASCII once, so the inner loop only folds the haystack.
     let needle_lower: Vec<u8> = needle.bytes().map(|b| b.to_ascii_lowercase()).collect();
     if needle_lower.is_empty() {
-        return Some(0);
+        return Some(0); // an empty needle matches at the start, mirroring `str::find`
     }
+    // Only try positions that begin a UTF-8 character, so the returned index is always a valid
+    // char boundary (safe to slice at). At each candidate, compare the next N folded bytes.
     haystack
         .char_indices()
         .map(|(idx, _)| idx)
