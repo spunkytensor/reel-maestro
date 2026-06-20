@@ -28,6 +28,10 @@ non-overlapping substring chunk of the narration so the chunks concatenated equa
 - For each scene write a vivid `image_prompt` for a photographic still: concrete subject, \
 vertical 9:16 framing, subject in the upper-middle two-thirds leaving room for captions at the bottom, \
 cinematic documentary lighting. No text or words in the image.\n\
+- Each `image_prompt` MUST describe a SINGLE, unified photographic frame. NEVER request a \
+split-screen, diptych, side-by-side, before/after, collage, triptych, or multi-panel image. To \
+contrast two ideas (e.g. imagination vs reality), use TWO SEPARATE scenes, one per idea, never one \
+split frame.\n\
 - Write a `music_prompt`: a short instrumental soundtrack description matching the mood — genre, \
 tempo/BPM, key instruments, energy. Always instrumental, explicitly NO vocals (it plays under narration).\n\
 - Write a `characters` list: one entry per person/animal that RECURS across two or more scenes. Give \
@@ -51,6 +55,10 @@ in, or \"\" if none. When a scene includes a character, write that character's c
 its `image_prompt` VERBATIM (do not paraphrase or change any detail). Other, non-recurring people in a \
 scene are DIFFERENT individuals: give them their own distinct appearance in the `image_prompt`, clearly \
 different from any recurring character, and never describe them as looking like one.\n\
+- Keep recurring characters' presence CONTINUOUS within a location: once two characters are together \
+in a setting (e.g. seated at the same table), include BOTH in `cast_ids` for EVERY scene set in that \
+location. Do not drop a character in one beat and reintroduce them the next, and do not have someone \
+appear or vanish mid-conversation.\n\
 - Write a `poster_prompt`: a single striking cover/thumbnail image concept for the whole reel, \
 designed to entice clicks — one clear expressive focal subject, high contrast, emotionally engaging, \
 broad appeal, vertical 9:16, no text or logos in the image. Feature the recurring cast if there is one.\n\

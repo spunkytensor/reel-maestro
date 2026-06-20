@@ -120,8 +120,11 @@ pub async fn generate(
                 .get(scenes[i].location_id.trim())
                 .map(|url| {
                     vec![Reference {
-                        label: "PRIOR PHOTO of this exact location — keep the SAME table surface, \
-                                table settings, props, furniture, and layout as it shows"
+                        label: "PRIOR PHOTO of this exact location — copy ONLY its room, table \
+                                surface, table settings, props, furniture, lighting, and background \
+                                patrons. IGNORE which people sit at the table in it and their count \
+                                and positions; the people present are defined solely by the PERSON \
+                                references above"
                             .to_string(),
                         data_url: url.clone(),
                     }]
@@ -409,7 +412,11 @@ fn build_image_prompt(
     // An explicit instruction makes image-output models far less likely to reply with text.
     let mut prompt = String::from(
         "Generate one photorealistic vertical 9:16 photograph. Do not include any text, words, \
-         captions, or watermarks in the image.",
+         captions, or watermarks in the image. Render a SINGLE, unified, full-frame photograph — \
+         never a split-screen, diptych, side-by-side, before/after, collage, grid, triptych, or \
+         multi-panel composition. Every person must be fully and solidly rendered: no translucent, \
+         ghosted, faded, doubled, or partially-formed figures, and no posters, mirrors, or \
+         reflections that read as extra people.",
     );
 
     if !references.is_empty() {
