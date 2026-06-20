@@ -216,14 +216,20 @@ mod tests {
             Scene {
                 line: "one two three".into(),
                 image_prompt: String::new(),
+                cast_ids: Vec::new(),
+                location_id: String::new(),
             },
             Scene {
                 line: "four five six".into(),
                 image_prompt: String::new(),
+                cast_ids: Vec::new(),
+                location_id: String::new(),
             },
             Scene {
                 line: "seven eight nine".into(),
                 image_prompt: String::new(),
+                cast_ids: Vec::new(),
+                location_id: String::new(),
             },
         ];
         let labels = [
@@ -337,6 +343,8 @@ mod tests {
         let scenes = vec![Scene {
             line: "one two three four five six".into(),
             image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
         }];
         let words: Vec<WordTiming> = (0..6)
             .map(|i| WordTiming {
@@ -448,10 +456,14 @@ mod tests {
             Scene {
                 line: "one two three four".into(),
                 image_prompt: String::new(),
+                cast_ids: Vec::new(),
+                location_id: String::new(),
             },
             Scene {
                 line: "five six seven eight".into(),
                 image_prompt: String::new(),
+                cast_ids: Vec::new(),
+                location_id: String::new(),
             },
         ];
         let words: Vec<WordTiming> = (0..8)
@@ -521,6 +533,8 @@ mod tests {
         let scenes = vec![Scene {
             line: "one two three four".into(),
             image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
         }];
         // No words, captions disabled.
         let reel = build(BuildOptions {
@@ -581,6 +595,8 @@ mod tests {
         let scenes = vec![Scene {
             line: "a b c d e f g h".into(),
             image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
         }];
         let images = vec![dir.join("scene-00.jpg")]; // unused (clip wins)
         let reel = build(BuildOptions {
@@ -639,6 +655,8 @@ mod tests {
         let scenes = vec![Scene {
             line: "a b c d".into(),
             image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
         }];
         let reel = build(BuildOptions {
             dir: &dir,

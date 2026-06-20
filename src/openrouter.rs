@@ -375,9 +375,7 @@ impl OpenRouter {
                     .ok_or_else(|| anyhow!("completed video job had no content url: {v}"))?;
                 Ok(VideoStatus::Done(url))
             }
-            "failed" | "cancelled" | "expired" => Ok(VideoStatus::Failed(
-                v["error"].as_str().unwrap_or("unknown error").to_string(),
-            )),
+            "failed" | "cancelled" | "expired" => Ok(VideoStatus::Failed(describe_video_error(&v))),
             _ => Ok(VideoStatus::Pending),
         }
     }
@@ -407,6 +405,55 @@ enum VideoStatus {
     Pending,
     Done(String),
     Failed(String),
+}
+
+/// Build the most informative failure string we can from a terminal video-job response. Veo (and
+/// other providers proxied by OpenRouter) report failures inconsistently — sometimes a plain
+/// `error` string, sometimes a `{code, message}` object, and on safety blocks a separate set of
+/// RAI media-filter fields. We pull whatever is present (so a content-filter reason isn't reduced
+/// to "unknown error") and fall back to a compact raw dump when nothing structured is found.
+fn describe_video_error(v: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // `error` as a plain string, or a structured `{message, code}` object.
+    match &v["error"] {
+        Value::String(s) if !s.trim().is_empty() => parts.push(s.trim().to_string()),
+        Value::Object(o) => {
+            let msg = o.get("message").and_then(Value::as_str).unwrap_or("").trim();
+            let code = o
+                .get("code")
+                .map(|c| c.as_str().map(str::to_string).unwrap_or_else(|| c.to_string()))
+                .unwrap_or_default();
+            match (msg.is_empty(), code.is_empty()) {
+                (false, false) => parts.push(format!("{msg} (code {code})")),
+                (false, true) => parts.push(msg.to_string()),
+                (true, false) => parts.push(format!("code {code}")),
+                (true, true) => {}
+            }
+        }
+        _ => {}
+    }
+
+    // Safety-filter specifics, when the provider includes them (Veo's RAI media filter). Accept a
+    // couple of key spellings since the proxy may pass them through camelCase or snake_case.
+    for key in ["raiMediaFilteredReasons", "rai_media_filtered_reasons"] {
+        if let Some(arr) = v[key].as_array() {
+            let reasons: Vec<String> = arr
+                .iter()
+                .filter_map(|r| r.as_str().map(str::to_string))
+                .collect();
+            if !reasons.is_empty() {
+                parts.push(format!("safety filter: {}", reasons.join("; ")));
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        // Nothing structured — surface a compact raw payload so the reason isn't lost entirely.
+        let raw: String = v.to_string().chars().take(400).collect();
+        parts.push(format!("no error detail in response; raw: {raw}"));
+    }
+    parts.join(" — ")
 }
 
 /// Build a base64 `data:` URL from image bytes, sniffing the MIME type from the
@@ -500,6 +547,30 @@ mod tests {
     fn image_content_no_refs_is_plain_string() {
         let c = image_content("a cat", &[]);
         assert_eq!(c, json!("a cat"));
+    }
+
+    #[test]
+    fn video_error_surfaces_string_object_and_filter_detail() {
+        // Plain string error.
+        assert_eq!(
+            describe_video_error(&json!({"error": "content may have been filtered"})),
+            "content may have been filtered"
+        );
+        // Structured {message, code} object.
+        assert_eq!(
+            describe_video_error(&json!({"error": {"message": "blocked", "code": 400}})),
+            "blocked (code 400)"
+        );
+        // Safety-filter reasons get appended.
+        let m = describe_video_error(&json!({
+            "error": "filtered",
+            "raiMediaFilteredReasons": ["Person/Face generation", "Celebrity"]
+        }));
+        assert!(m.contains("filtered"));
+        assert!(m.contains("safety filter: Person/Face generation; Celebrity"));
+        // No structured detail → compact raw dump instead of being lost.
+        let m = describe_video_error(&json!({"status": "failed"}));
+        assert!(m.contains("raw:"));
     }
 
     #[test]

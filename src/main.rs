@@ -77,7 +77,7 @@ pub struct Cli {
     mix: MixMode,
 
     /// Background music gain (0.0–1.0+). Higher = louder music.
-    #[arg(long, default_value_t = 0.8)]
+    #[arg(long, default_value_t = 0.6)]
     music_volume: f64,
 
     /// Skip image generation and stop right after writing word timings (cheap caption-timing
@@ -177,7 +177,7 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // 1. Script ---------------------------------------------------------------
     // Resume mode loads the prior run's script.json; fresh mode writes a new one.
-    let (script, dir) = if let Some(from) = &cli.from {
+    let (mut script, dir) = if let Some(from) = &cli.from {
         let bytes = std::fs::read(from.join("script.json")).with_context(|| {
             format!(
                 "could not read {}/script.json (is this a Reel Maestro run folder?)",
@@ -226,6 +226,10 @@ async fn run(cli: &Cli) -> Result<()> {
         std::fs::write(dir.join("script.json"), serde_json::to_vec_pretty(&script)?)?;
         (script, dir)
     };
+
+    // Fold any legacy single-`cast` string (older resumed `script.json`) into `characters` so the
+    // rest of the pipeline only deals with the multi-character/location model.
+    script.normalize_entities();
 
     // Voice: honor an explicit --voice/REELMAESTRO_VOICE; otherwise auto-pick a male/female
     // voice from the script's narrator gender.
@@ -305,16 +309,34 @@ async fn run(cli: &Cli) -> Result<()> {
             or.image_model
         );
         let consistency = !cli.no_consistency;
-        if consistency && (cli.character_ref.is_some() || !script.cast.trim().is_empty()) {
-            match &cli.character_ref {
-                Some(p) => println!("  character consistency on (reference: {})", p.display()),
-                None => println!("  character consistency on (cast: {})", script.cast),
+        if consistency
+            && (cli.character_ref.is_some()
+                || !script.characters.is_empty()
+                || !script.locations.is_empty())
+        {
+            if let Some(p) = &cli.character_ref {
+                println!("  character consistency on (reference: {})", p.display());
+            }
+            if !script.characters.is_empty() {
+                let who: Vec<&str> = script.characters.iter().map(|c| c.id.as_str()).collect();
+                println!(
+                    "  character consistency on (characters: {})",
+                    who.join(", ")
+                );
+            }
+            if !script.locations.is_empty() {
+                let where_: Vec<&str> = script.locations.iter().map(|l| l.id.as_str()).collect();
+                println!(
+                    "  location consistency on (locations: {})",
+                    where_.join(", ")
+                );
             }
         }
         images::generate(
             &or,
             &script.scenes,
-            &script.cast,
+            &script.characters,
+            &script.locations,
             cli.character_ref.as_deref(),
             consistency,
             &dir,
@@ -382,7 +404,12 @@ async fn run(cli: &Cli) -> Result<()> {
         println!("→ generating poster ({}) ...", or.image_model);
         let refs = poster_refs(&dir);
         let concept = poster_concept(&script);
-        if images::generate_poster(&or, &concept, &script.cast, &refs, &dir)
+        let protagonist = script
+            .characters
+            .first()
+            .map(|c| c.description.as_str())
+            .unwrap_or("");
+        if images::generate_poster(&or, &concept, protagonist, &refs, &dir)
             .await
             .is_none()
         {
@@ -461,7 +488,9 @@ async fn resolve_music(
     if !cli.music_gen {
         return None;
     }
-    println!("→ generating soundtrack ({}) ...", or.music_model);
+    // Lyria bills a flat fee per track (unlike Veo's per-second cost), so the estimate is a
+    // fixed figure rather than a computed one.
+    println!("→ generating soundtrack ({}, ~$0.08) ...", or.music_model);
     println!("  prompt: {music_prompt}");
 
     // Lyria is a flaky preview model, so retry a few times before giving up.

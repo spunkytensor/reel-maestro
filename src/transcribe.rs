@@ -209,19 +209,39 @@ fn local_word_timings(cmd: &str, model: &str, audio: &Path) -> Result<Vec<WordTi
     }
 
     // `.whisper-ts` is shared across runs, so don't grab "any .json" — read the
-    // exact file whisper writes for this audio: `<out_dir>/<audio-stem>.json`.
-    // Append ".json" to the stem rather than `with_extension` so dotted names
-    // (e.g. `my.audio.wav` -> `my.audio.json`) resolve correctly.
-    let stem = audio.file_stem().context("audio path has no filename")?;
-    let mut filename = stem.to_os_string();
-    filename.push(".json");
-    let json = out_dir.join(filename);
-    if !json.exists() {
-        bail!("`{cmd}` produced no word-timing JSON at {}", json.display());
-    }
-    let v: Value = serde_json::from_slice(&std::fs::read(&json)?)
+    // exact file whisper writes for this audio. Its name varies by version
+    // (see `whisper_json_candidates`), so try the known conventions in order.
+    let candidates = whisper_json_candidates(&out_dir, audio)?;
+    let json = candidates.iter().find(|p| p.exists()).ok_or_else(|| {
+        let tried: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
+        anyhow::anyhow!(
+            "`{cmd}` produced no word-timing JSON (looked for: {})",
+            tried.join(", ")
+        )
+    })?;
+    let v: Value = serde_json::from_slice(&std::fs::read(json)?)
         .with_context(|| format!("could not parse word-timing JSON from {}", json.display()))?;
     Ok(words_from_whisper_json(&v))
+}
+
+/// Candidate paths for whisper-timestamped's word-timing JSON, most-likely first.
+/// The output filename varies by version: newer releases (1.15.x) write
+/// `<audio-filename>.words.json` (e.g. `audio.mp3.words.json`), while older ones
+/// write `<audio-stem>.json` (e.g. `audio.json`). Names are built from the
+/// file_name/file_stem so dotted names (e.g. `my.audio.wav`) resolve correctly.
+fn whisper_json_candidates(out_dir: &Path, audio: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let name = audio.file_name().context("audio path has no filename")?;
+    let stem = audio.file_stem().context("audio path has no filename")?;
+    Ok(["words.json", "json"]
+        .iter()
+        .flat_map(|ext| [(name, ext), (stem, ext)])
+        .map(|(base, ext)| {
+            let mut filename = base.to_os_string();
+            filename.push(".");
+            filename.push(ext);
+            out_dir.join(filename)
+        })
+        .collect())
 }
 
 /// Pull word timings from whisper-timestamped JSON: `segments[].words[]` (each with `text`,
@@ -341,6 +361,27 @@ mod tests {
         assert!((w[2].end_s - 1.85).abs() < 1e-9);
         // Real timings have gaps/pauses, unlike the contiguous estimator.
         assert!(w[1].end_s < w[2].start_s);
+    }
+
+    #[test]
+    fn whisper_json_candidates_cover_known_naming_conventions() {
+        let out = Path::new("/tmp/.whisper-ts");
+        let names: Vec<String> = whisper_json_candidates(out, Path::new("/x/audio.mp3"))
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        // Newer whisper-timestamped (1.15.x) writes `<filename>.words.json`; older
+        // versions write `<stem>.json`. Both must be among the candidates.
+        assert!(names.contains(&"audio.mp3.words.json".to_string()));
+        assert!(names.contains(&"audio.json".to_string()));
+        // `.words.json` is preferred over plain `.json` (most current installs).
+        let words_idx = names
+            .iter()
+            .position(|n| n == "audio.mp3.words.json")
+            .unwrap();
+        let plain_idx = names.iter().position(|n| n == "audio.json").unwrap();
+        assert!(words_idx < plain_idx);
     }
 
     #[test]

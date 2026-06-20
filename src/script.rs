@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::model::{Scene, Script};
+use crate::model::{Entity, Scene, Script};
 use crate::openrouter::OpenRouter;
 
 /// System prompt shared by every script-generation entry point. It pins the format (length,
@@ -30,10 +30,27 @@ vertical 9:16 framing, subject in the upper-middle two-thirds leaving room for c
 cinematic documentary lighting. No text or words in the image.\n\
 - Write a `music_prompt`: a short instrumental soundtrack description matching the mood — genre, \
 tempo/BPM, key instruments, energy. Always instrumental, explicitly NO vocals (it plays under narration).\n\
-- Write a `cast`: if a specific person or animal recurs through the story, describe them and their \
-FIXED visual traits for consistency (e.g. \"a woman ~30, curly red hair, freckles, olive-green jacket\" \
-or \"a golden retriever puppy, fluffy, red collar\"); feature them across scenes. If nothing specific \
-recurs (abstract topic, landscapes, crowds), set `cast` to an empty string.\n\
+- Write a `characters` list: one entry per person/animal that RECURS across two or more scenes. Give \
+each a short stable `id` slug (e.g. \"man\", \"date\", \"puppy\") and a FULLY-SPECIFIED, canonical \
+`description` that fixes EVERY visual detail so it can't drift: age, hair (colour, length, AND whether \
+worn up or down), eyes, build, complexion, AND complete outfit including sleeve length (e.g. \"woman \
+~27, sleek black hair worn DOWN to the shoulders, warm tan complexion, sage-green wrap dress with \
+three-quarter sleeves\"). If nothing specific recurs (abstract topic, landscapes, crowds), use an empty \
+list. One-off people who appear in a single scene do NOT go here.\n\
+- Write a `locations` list: one entry per place that RECURS across scenes (e.g. the restaurant). Give \
+each a short stable `id` and a FULLY-SPECIFIED `description` fixing decor, materials, colour palette, \
+and lighting (e.g. \"a warm bistro: exposed brick, brass pendant lights, dark-wood tables, candlelit, \
+amber palette\"). Be UNAMBIGUOUS and NON-CONTRADICTORY about focal surfaces and props the camera sits \
+close to: state the table/seating surface exactly ONE way (e.g. \"bare dark-wood tables, NO \
+tablecloths\" OR \"tables with white tablecloths\", never wording that implies both) and pin any other \
+repeated props, so they cannot drift between scenes. Reuse ONE location across scenes when the story \
+stays in one place rather than inventing a new setting each beat. Empty list if there is no recurring place.\n\
+- For each scene set `cast_ids`: the ids of the `characters` that actually appear in THAT scene's \
+image (a subset, possibly empty). Set `location_id`: the id of the `locations` entry the scene is set \
+in, or \"\" if none. When a scene includes a character, write that character's canonical traits into \
+its `image_prompt` VERBATIM (do not paraphrase or change any detail). Other, non-recurring people in a \
+scene are DIFFERENT individuals: give them their own distinct appearance in the `image_prompt`, clearly \
+different from any recurring character, and never describe them as looking like one.\n\
 - Write a `poster_prompt`: a single striking cover/thumbnail image concept for the whole reel, \
 designed to entice clicks — one clear expressive focal subject, high contrast, emotionally engaging, \
 broad appeal, vertical 9:16, no text or logos in the image. Feature the recurring cast if there is one.\n\
@@ -53,22 +70,46 @@ fn full_schema() -> Value {
             "narration": { "type": "string" },
             "scenes": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "line": { "type": "string" },
-                        "image_prompt": { "type": "string" }
-                    },
-                    "required": ["line", "image_prompt"]
-                }
+                "items": scene_schema()
             },
             "music_prompt": { "type": "string" },
-            "cast": { "type": "string" },
+            "characters": entity_list_schema(),
+            "locations": entity_list_schema(),
             "poster_prompt": { "type": "string" },
             "narrator_gender": { "type": "string", "enum": ["male", "female", "neutral"] }
         },
-        "required": ["title", "narration", "scenes", "music_prompt", "cast", "poster_prompt", "narrator_gender"]
+        "required": ["title", "narration", "scenes", "music_prompt", "characters", "locations", "poster_prompt", "narrator_gender"]
+    })
+}
+
+/// Shared schema for one scene object (used by both the full and scenes-only schemas).
+fn scene_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "line": { "type": "string" },
+            "image_prompt": { "type": "string" },
+            "cast_ids": { "type": "array", "items": { "type": "string" } },
+            "location_id": { "type": "string" }
+        },
+        "required": ["line", "image_prompt", "cast_ids", "location_id"]
+    })
+}
+
+/// Shared schema for a list of recurring entities (`characters` or `locations`).
+fn entity_list_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "id": { "type": "string" },
+                "description": { "type": "string" }
+            },
+            "required": ["id", "description"]
+        }
     })
 }
 
@@ -83,22 +124,15 @@ fn scenes_schema() -> Value {
             "title": { "type": "string" },
             "scenes": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "line": { "type": "string" },
-                        "image_prompt": { "type": "string" }
-                    },
-                    "required": ["line", "image_prompt"]
-                }
+                "items": scene_schema()
             },
             "music_prompt": { "type": "string" },
-            "cast": { "type": "string" },
+            "characters": entity_list_schema(),
+            "locations": entity_list_schema(),
             "poster_prompt": { "type": "string" },
             "narrator_gender": { "type": "string", "enum": ["male", "female", "neutral"] }
         },
-        "required": ["title", "scenes", "music_prompt", "cast", "poster_prompt", "narrator_gender"]
+        "required": ["title", "scenes", "music_prompt", "characters", "locations", "poster_prompt", "narrator_gender"]
     })
 }
 
@@ -109,7 +143,8 @@ struct ScenesOnly {
     title: String,
     scenes: Vec<Scene>,
     music_prompt: String,
-    cast: String,
+    characters: Vec<Entity>,
+    locations: Vec<Entity>,
     poster_prompt: String,
     narrator_gender: String,
 }
@@ -148,6 +183,8 @@ fn finalize(mut script: Script) -> Script {
     for scene in &mut script.scenes {
         scene.line = remove_dashes(&scene.line);
     }
+    // Fold any legacy single-cast string into `characters` (no-op for fresh multi-character runs).
+    script.normalize_entities();
     script
 }
 
@@ -196,7 +233,9 @@ pub async fn from_narration(or: &OpenRouter, narration: &str) -> Result<Script> 
         narration: narration.to_string(),
         scenes: plan.scenes,
         music_prompt: plan.music_prompt,
-        cast: plan.cast,
+        characters: plan.characters,
+        locations: plan.locations,
+        cast: String::new(),
         poster_prompt: plan.poster_prompt,
         narrator_gender: plan.narrator_gender,
     }))
@@ -205,6 +244,40 @@ pub async fn from_narration(or: &OpenRouter, narration: &str) -> Result<Script> 
 #[cfg(test)]
 mod tests {
     use super::remove_dashes;
+    use crate::model::{Scene, Script};
+
+    #[test]
+    fn old_scene_json_deserializes_with_empty_entity_refs() {
+        // Back-compat: a `script.json` predating multi-character support carries `features_cast`
+        // (now ignored) and no `cast_ids`/`location_id`. It must still deserialize — resume reuses
+        // existing images, so empty per-scene refs are harmless.
+        let s: Scene =
+            serde_json::from_str(r#"{"line":"hi","image_prompt":"a city","features_cast":true}"#)
+                .unwrap();
+        assert!(s.cast_ids.is_empty());
+        assert_eq!(s.location_id, "");
+        // New-format scenes round-trip their entity references.
+        let s: Scene = serde_json::from_str(
+            r#"{"line":"hi","image_prompt":"a city","cast_ids":["man","date"],"location_id":"bistro"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.cast_ids, ["man", "date"]);
+        assert_eq!(s.location_id, "bistro");
+    }
+
+    #[test]
+    fn legacy_cast_string_folds_into_characters() {
+        // A legacy `cast` string is migrated into a single character so old runs keep one anchor.
+        let mut script: Script = serde_json::from_str(
+            r#"{"title":"t","narration":"n","scenes":[],"music_prompt":"m","cast":"a woman ~30"}"#,
+        )
+        .unwrap();
+        assert!(script.characters.is_empty());
+        script.normalize_entities();
+        assert_eq!(script.characters.len(), 1);
+        assert_eq!(script.characters[0].id, "main");
+        assert_eq!(script.characters[0].description, "a woman ~30");
+    }
 
     #[test]
     fn strips_em_and_en_dashes() {

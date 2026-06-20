@@ -17,15 +17,19 @@ See https://www.youtube.com/@ReelMaestroSamples for examples of reels created wi
 
 ## How it works
 
-```
-input ──┬─ --topic "..."            ─┐
-        ├─ --script narration.txt    ├─→ script (LLM) → narration + scene prompts
-        └─ --url "https://..."  ─────┘
-                                       │
-   text-to-speech ─────────────────────→ audio.mp3
-   whisper-timestamped (local) ────────→ word timings  → captions (.ass)
-   image generation (per scene) ───────→ 1080×1920 stills
-   ffmpeg (Ken Burns + concat + burn + mux) → reel.mp4
+```mermaid
+flowchart TD
+    input["Input<br/>--topic / --brief / --script / --url"] --> script["Script (LLM)"]
+    script --> plan["narration + scene prompts"]
+
+    plan --> tts["text-to-speech"] --> audio["audio.mp3"]
+    audio --> whisper["whisper-timestamped (local)"] --> words["word timings"] --> caps["captions (.ass)"]
+    plan --> img["image generation (per scene)"] --> stills["1080×1920 stills"]
+
+    audio --> ff["ffmpeg<br/>Ken Burns + concat + burn + mux"]
+    caps --> ff
+    stills --> ff
+    ff --> reel["reel.mp4"]
 ```
 
 Audio is the master clock: captions are timed from real word-level timestamps produced by a
@@ -37,7 +41,7 @@ no timestamps for any model — so word timing is done locally instead.
 ## Requirements
 
 - Rust 1.88+ and Cargo.
-- `ffmpeg` and `ffprobe` on your PATH (`sudo apt install ffmpeg`).
+- `ffmpeg` and `ffprobe` on your PATH (see [Install ffmpeg](#install-ffmpeg) below).
 - A font for captions: defaults to **DejaVu Sans** (`fonts-dejavu`, usually preinstalled).
 - An OpenRouter API key with a little credit.
 - *(Optional, for exact captions)* [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped)
@@ -49,6 +53,29 @@ no timestamps for any model — so word timing is done locally instead.
 Reel Maestro is currently tested on Linux x86_64 in CI. macOS should work with `ffmpeg` and
 `ffprobe` installed, but is not CI-tested yet. Windows is not currently supported or tested.
 The full render smoke tests are Linux-oriented because they rely on the default DejaVu font path.
+
+## Install ffmpeg
+
+Reel Maestro shells out to `ffmpeg` (render/mux/burn-in) and `ffprobe` (media inspection), so
+both must be on your PATH before running. Install via your platform's package manager:
+
+```bash
+# Debian/Ubuntu
+sudo apt install ffmpeg
+
+# Fedora
+sudo dnf install ffmpeg
+
+# macOS (Homebrew) — not CI-tested, but should work (see Supported platforms)
+brew install ffmpeg
+```
+
+`ffprobe` ships alongside `ffmpeg` in both of the above. Verify both resolve:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
 
 ## Install
 
@@ -108,11 +135,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # 2. Create a virtual environment and install whisper-timestamped into it
 uv venv                                  # creates ./.venv (Python 3.x)
 source .venv/bin/activate                # activate it (PATH now includes whisper_timestamped)
-uv pip install whisper-timestamped
+uv pip install whisper-timestamped       # tested with 1.15.9 (see note below)
 
 # 3. Verify the CLI is on your PATH
 whisper_timestamped --help
 ```
+
+> **Tested version:** Reel Maestro is tested against `whisper-timestamped` **1.15.9**.
+> Other versions generally work — Reel Maestro tolerates the different word-timing
+> JSON filenames that different releases emit (e.g. `audio.words.json` vs. `audio.json`).
+> If you want byte-for-byte reproducibility with our testing, pin it:
+> `uv pip install whisper-timestamped==1.15.9`.
 
 With the venv **activated**, run `reelmaestro` from the same shell so `whisper_timestamped` is
 found on PATH. The first run downloads the chosen Whisper model (`base` by default; pass
@@ -163,7 +196,7 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--music-gen` | off | AI-generate a background soundtrack (OpenRouter music model, ~$0.08). |
 | `--music <file>` | — | Use your own audio file as the soundtrack (overrides `--music-gen`). |
 | `--mix <duck\|low>` | `duck` | How music sits under narration: `duck` = auto-dip under the voice; `low` = constant volume. |
-| `--music-volume <f64>` | `0.8` | Background music gain. Higher = louder; raise toward `1.0`+ for a stronger bed. |
+| `--music-volume <f64>` | `0.6` | Background music gain. Higher = louder; raise toward `1.0`+ for a stronger bed. |
 | `--video` | off | Render ALL scenes as AI video clips (Veo image-to-video). ~$0.05/sec. |
 | `--video-scenes <N>` | — | Render only the first N scenes as video; the rest stay Ken Burns stills (caps cost). |
 | `--video-resolution <res>` | `720p` | Veo clip resolution (`720p`/`1080p`). |
@@ -219,7 +252,7 @@ reelmaestro --topic "..." --music-gen --mix low
 - `--mix duck` (default) ducks the music under the narration via gentle sidechain
   compression (it stays audible, just dips under speech); `--mix low` holds it at a
   constant volume. Either way the track is looped to the video length with fade in/out.
-- `--music-volume` (default `0.8`) sets the music gain — raise it (e.g. `1.0`+) for a
+- `--music-volume` (default `0.6`) sets the music gain — raise it (e.g. `1.0`+) for a
   louder bed, lower it if the music competes with the voice.
 - Music generation is **non-fatal**: if the (preview) music model fails, Reel Maestro prints
   a warning and finishes the reel without music.
@@ -369,6 +402,78 @@ error ⇒ the text model.
 
 > Tip: `--no-images` runs only script + TTS + word timing and stops, so you can check
 > caption timing for a couple of cents without paying for images.
+
+## AI invocations at a glance
+
+Every model call Reel Maestro makes and how each response feeds the final `reel.mp4`. One
+**Text LLM** call plans everything; its fields fan out to the image, speech, music, and video
+models. Solid arrows are data flow; dotted arrows are *conditioning* (an image used to keep a
+subject consistent). Dashed-border nodes are **opt-in** (`--music-gen`, `--video`). Word timing
+runs **locally** (`whisper-timestamped`), not through OpenRouter.
+
+```mermaid
+flowchart TD
+    input["Input<br/>--topic / --brief / --script / --url"] --> textLLM["🧠 Text LLM<br/>claude-sonnet-4-6"]
+
+    textLLM --> narration["narration"]
+    textLLM --> scenePrompts["scene image_prompts"]
+    textLLM --> posterPrompt["poster_prompt"]
+    textLLM --> musicPrompt["music_prompt"]
+    textLLM --> cast["cast description"]
+
+    %% Character-consistency portrait
+    cast -->|"if non-empty"| charImg["🎨 Image model<br/>character-ref portrait"]
+    charImg --> charRef["character-ref.jpg"]
+
+    %% Per-scene images
+    scenePrompts --> sceneImg["🎨 Image model · per scene<br/>Nano Banana"]
+    charRef -.->|conditions| sceneImg
+    sceneImg --> stills["scene-NN.jpg"]
+
+    %% Custom poster
+    posterPrompt --> posterImg["🎨 Image model<br/>poster"]
+    charRef -.->|conditions| posterImg
+    posterImg --> poster["poster.jpg"]
+
+    %% Narration audio
+    narration --> tts["🎙️ TTS model<br/>Gemini TTS"]
+    tts --> audio["audio.mp3"]
+
+    %% Captions — local, not an AI/OpenRouter call
+    audio --> whisper["⏱️ whisper-timestamped<br/>local"]
+    whisper --> words["words.json"] --> captions["captions .ass"]
+
+    %% Optional soundtrack
+    musicPrompt --> music["🎵 Music model<br/>Lyria 3"]
+    music --> musicFile["music.wav"]
+
+    %% Optional AI video clips
+    stills --> veo["🎬 Video model · per scene<br/>Veo image-to-video"]
+    veo --> clips["clip-NN.mp4"]
+
+    %% Final assembly
+    stills --> mux["🛠️ ffmpeg<br/>Ken Burns + concat + burn-in + mux"]
+    clips --> mux
+    captions --> mux
+    audio --> mux
+    musicFile --> mux
+    mux --> reel(["reel.mp4"])
+    poster -->|embedded cover art| reel
+
+    classDef optional stroke-dasharray: 5 5;
+    class music,musicFile,veo,clips optional;
+```
+
+| Invocation | Model (default) | Produces | Used for |
+|---|---|---|---|
+| Text LLM | `anthropic/claude-sonnet-4-6` | narration, scene prompts, `poster_prompt`, `music_prompt`, `cast` | drives every downstream call |
+| Image · portrait | `google/gemini-3.1-flash-image` | `character-ref.jpg` | conditions scene + poster images |
+| Image · per scene | `google/gemini-3.1-flash-image` | `scene-NN.jpg` | Ken Burns stills / Veo first frames |
+| Image · poster | `google/gemini-3.1-flash-image` | `poster.jpg` | embedded MP4 cover art |
+| TTS | `google/gemini-3.1-flash-tts-preview` | `audio.mp3` | narration + master clock |
+| Word timing *(local)* | `whisper_timestamped` | `words.json` | caption timing → `.ass` |
+| Music *(opt-in)* | `google/lyria-3-pro-preview` | `music.wav` | background soundtrack |
+| Video *(opt-in)* | `google/veo-3.1-lite` | `clip-NN.mp4` | animated scenes |
 
 ## Contributing
 
