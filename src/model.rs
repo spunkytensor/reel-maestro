@@ -24,6 +24,19 @@ pub struct WordTiming {
     pub end_s: f64,
 }
 
+/// A recurring visual entity whose appearance must stay fixed across scenes — either a
+/// person/animal (a [`Script::characters`] entry) or a place (a [`Script::locations`] entry).
+/// `id` is a short slug the scenes reference; `description` is a fully-specified canonical visual
+/// spec (worn up/down, sleeve length, decor, palette, …) reused verbatim everywhere it appears,
+/// so the model can't free-fill the unspecified bits differently each time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entity {
+    /// Short, stable slug (e.g. `"man"`, `"date"`, `"restaurant"`) that scenes reference.
+    pub id: String,
+    /// Canonical, fully-specified visual description; the consistency anchor.
+    pub description: String,
+}
+
 /// One visual beat: a slice of narration and the image to show during it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -31,6 +44,20 @@ pub struct Scene {
     pub line: String,
     /// A vivid, vertical-friendly prompt for the image generator.
     pub image_prompt: String,
+    /// Ids of the recurring [`Script::characters`] that appear in this scene (a subset). Each is
+    /// conditioned on its reference portrait (identity lock) so the same person carries through.
+    /// Empty = no recurring character here, so the scene is generated independently and any
+    /// people render as distinct individuals (the old `features_cast == false` behavior).
+    //
+    // `#[serde(default)]`: added after the format shipped. Older `script.json` files lack it (and
+    // carry a now-ignored `features_cast` bool); they resume fine since resume reuses existing
+    // images rather than regenerating, so per-scene conditioning never runs on old runs.
+    #[serde(default)]
+    pub cast_ids: Vec<String>,
+    /// Id of the recurring [`Script::locations`] entry this scene is set in, or `""` for none.
+    /// When set, the scene is also conditioned on that location's establishing reference image.
+    #[serde(default)]
+    pub location_id: String,
 }
 
 /// The full plan for one video.
@@ -47,8 +74,19 @@ pub struct Script {
     pub scenes: Vec<Scene>,
     /// A short instrumental-music description (mood/genre/tempo) for the soundtrack.
     pub music_prompt: String,
-    /// Visual description of the recurring person/animal(s) and their fixed traits, used to
-    /// keep them consistent across scenes. Empty when nothing recurs.
+    /// Recurring people/animals, each with fixed visual traits, kept consistent across scenes by
+    /// conditioning every scene that lists them (via [`Scene::cast_ids`]) on a per-character
+    /// reference portrait. Empty when nothing recurs.
+    #[serde(default)]
+    pub characters: Vec<Entity>,
+    /// Recurring locations/settings, each with a fixed look, kept consistent by conditioning
+    /// scenes set there (via [`Scene::location_id`]) on a per-location establishing image.
+    #[serde(default)]
+    pub locations: Vec<Entity>,
+    /// Legacy single-cast description from before multi-character support. Read-only back-compat:
+    /// older `script.json` files set this string; [`Script::normalize_entities`] folds it into
+    /// `characters` so those runs still behave like one recurring character.
+    #[serde(default)]
     pub cast: String,
     /// A concept for an eye-catching cover/thumbnail image for the whole reel.
     //
@@ -64,4 +102,17 @@ pub struct Script {
     // "no preference", which `pick_voice` maps to the default voice.
     #[serde(default)]
     pub narrator_gender: String,
+}
+
+impl Script {
+    /// Fold a legacy `cast` string (older `script.json`) into `characters` so pre-multi-character
+    /// runs behave like a single recurring character. No-op once `characters` is populated.
+    pub fn normalize_entities(&mut self) {
+        if self.characters.is_empty() && !self.cast.trim().is_empty() {
+            self.characters.push(Entity {
+                id: "main".to_string(),
+                description: self.cast.trim().to_string(),
+            });
+        }
+    }
 }

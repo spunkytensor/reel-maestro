@@ -303,20 +303,27 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         let narr = format!("[{n}:a]");
         let mus = format!("[{}:a]", n + 1);
         let vol = music_volume.max(0.0);
+        // Force every amix input to stereo so the mix is stereo: amix collapses its output to
+        // the fewest-channel input, so a mono narration would otherwise downmix the (stereo)
+        // music to mono and discard its stereo image. Upmixing the mono narration to stereo
+        // (centered) before the mix keeps the music's L/R intact. The sidechain detector still
+        // takes the raw mono narration — `narr` is an input stream, so ffmpeg auto-splits it.
         if duck {
             // Music plays at full `vol` and dips only gently under speech, then recovers
             // in gaps. Low ratio + high threshold + mix<1 keep the duck shallow so the
             // music stays clearly audible throughout.
             parts.push(format!(
-                "{mus}volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[mv];\
+                "{mus}aformat=channel_layouts=stereo,volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[mv];\
                  [mv]{narr}sidechaincompress=threshold=0.12:ratio=2:attack=25:release=350:mix=0.6[mduck];\
-                 {narr}[mduck]amix=inputs=2:duration=first:normalize=0[aout]"
+                 {narr}aformat=channel_layouts=stereo[narrst];\
+                 [narrst][mduck]amix=inputs=2:duration=first:normalize=0[aout]"
             ));
         } else {
             // Music held at a constant `vol` under the narration.
             parts.push(format!(
-                "{mus}volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[m];\
-                 {narr}[m]amix=inputs=2:duration=first:normalize=0[aout]"
+                "{mus}aformat=channel_layouts=stereo,volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[m];\
+                 {narr}aformat=channel_layouts=stereo[narrst];\
+                 [narrst][m]amix=inputs=2:duration=first:normalize=0[aout]"
             ));
         }
         "[aout]".to_string()
@@ -357,6 +364,10 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
             "192k",
             "-ar",
             "44100",
+            // Always emit a 2-channel file; the no-music path maps mono narration directly, and
+            // this keeps every reel a consistent stereo container (centered dual-mono if mono).
+            "-ac",
+            "2",
             "-shortest",
             "-movflags",
             "+faststart",
