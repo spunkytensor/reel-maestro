@@ -680,6 +680,27 @@ fn build_image_prompt(
     if style {
         prompt.push_str(HOUSE_STYLE);
     }
+
+    // Canonical text lock — pins the fixed traits even when a reference image is missing.
+    let described: Vec<&&Entity> = people
+        .iter()
+        .filter(|p| !p.description.trim().is_empty())
+        .collect();
+    if !described.is_empty() {
+        prompt.push_str(" Recurring people in this scene, keep EXACTLY consistent: ");
+        for p in described {
+            prompt.push_str(&format!("[{}] {}; ", p.id, p.description));
+        }
+    }
+    if let Some(loc) = location {
+        if !loc.description.trim().is_empty() {
+            prompt.push_str(&format!(
+                " Setting, keep EXACTLY consistent: {}.",
+                loc.description
+            ));
+        }
+    }
+
     prompt.push_str(&format!(" Scene: {image_prompt}"));
     prompt
 }
