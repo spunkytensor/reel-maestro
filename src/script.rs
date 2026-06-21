@@ -37,17 +37,25 @@ tempo/BPM, key instruments, energy. Always instrumental, explicitly NO vocals (i
 - Write a `characters` list: one entry per person/animal that RECURS across two or more scenes. Give \
 each a short stable `id` slug (e.g. \"man\", \"date\", \"puppy\") and a FULLY-SPECIFIED, canonical \
 `description` that fixes EVERY visual detail so it can't drift: age, hair (colour, length, AND whether \
-worn up or down), eyes, build, complexion, AND complete outfit including sleeve length (e.g. \"woman \
+worn up or down), eyes, build, complexion, AND complete outfit. For sleeves, pin BOTH the sleeve length \
+AND exactly how they are worn — pick ONE unambiguous state and state it (e.g. \"long sleeves worn down, \
+buttoned at the wrist\" OR \"long sleeves rolled to the elbow\" OR \"short sleeves\") — never just \
+\"long sleeves\", which the image model renders inconsistently (sometimes rolled, sometimes not). Do \
+the same for any other adjustable garment detail (collar open/buttoned, jacket on/off). Example: \"woman \
 ~27, sleek black hair worn DOWN to the shoulders, warm tan complexion, sage-green wrap dress with \
-three-quarter sleeves\"). If nothing specific recurs (abstract topic, landscapes, crowds), use an empty \
+three-quarter sleeves\" or \"man ~29, navy button-up shirt with long sleeves rolled to the elbow, slim \
+dark-grey chinos\". If nothing specific recurs (abstract topic, landscapes, crowds), use an empty \
 list. One-off people who appear in a single scene do NOT go here.\n\
 - Write a `locations` list: one entry per place that RECURS across scenes (e.g. the restaurant). Give \
-each a short stable `id` and a FULLY-SPECIFIED `description` fixing decor, materials, colour palette, \
-and lighting (e.g. \"a warm bistro: exposed brick, brass pendant lights, dark-wood tables, candlelit, \
-amber palette\"). Be UNAMBIGUOUS and NON-CONTRADICTORY about focal surfaces and props the camera sits \
-close to: state the table/seating surface exactly ONE way (e.g. \"bare dark-wood tables, NO \
-tablecloths\" OR \"tables with white tablecloths\", never wording that implies both) and pin any other \
-repeated props, so they cannot drift between scenes. Reuse ONE location across scenes when the story \
+each a short stable `id` and a FULLY-SPECIFIED `description` fixing ONLY the FIXED setting: decor, \
+architecture, furniture, materials, colour palette, and lighting (e.g. \"a warm bistro: exposed brick, \
+brass pendant lights, bare dark-wood tables, matte-black chairs, candlelit, amber palette\"). Be \
+UNAMBIGUOUS and NON-CONTRADICTORY about focal surfaces: state the table/seating surface exactly ONE way \
+(e.g. \"bare dark-wood tables, NO tablecloths\" OR \"tables with white tablecloths\", never wording \
+that implies both). Do NOT put TRANSIENT or movable tabletop items in the location description — no \
+specific glasses, water levels, menus, plates, cutlery, food, or counts of them; those naturally \
+change scene to scene, so listing them only makes every later scene look \"wrong\". Put any such \
+per-scene prop in that scene's `image_prompt` instead. Reuse ONE location across scenes when the story \
 stays in one place rather than inventing a new setting each beat. Empty list if there is no recurring place.\n\
 - For each scene set `cast_ids`: the ids of the `characters` that actually appear in THAT scene's \
 image (a subset, possibly empty). Set `location_id`: the id of the `locations` entry the scene is set \
@@ -59,6 +67,15 @@ different from any recurring character, and never describe them as looking like 
 in a setting (e.g. seated at the same table), include BOTH in `cast_ids` for EVERY scene set in that \
 location. Do not drop a character in one beat and reintroduce them the next, and do not have someone \
 appear or vanish mid-conversation.\n\
+- Keep SEATING/POSITIONING consistent within a location: decide ONE fixed arrangement for the \
+recurring characters there (e.g. \"Jake seated on the LEFT, Maya on the RIGHT\") and write that exact \
+placement into the `image_prompt` of EVERY scene set in that location, so they never swap sides of the \
+table between scenes.\n\
+- For each scene set `transition` (how it enters from the PREVIOUS scene): \"dissolve\" for soft, \
+continuous beats where a gentle cross-fade fits (time passing, dream/imagination, a mood shift, or \
+staying in the same place), or \"cut\" for a sharp contrast or a new location. The FIRST scene must be \
+\"cut\". Note: dissolves only render between two consecutive image stills, so use them for feel, not \
+for pacing.\n\
 - Write a `poster_prompt`: a single striking cover/thumbnail image concept for the whole reel, \
 designed to entice clicks — one clear expressive focal subject, high contrast, emotionally engaging, \
 broad appeal, vertical 9:16, no text or logos in the image. Feature the recurring cast if there is one.\n\
@@ -99,9 +116,10 @@ fn scene_schema() -> Value {
             "line": { "type": "string" },
             "image_prompt": { "type": "string" },
             "cast_ids": { "type": "array", "items": { "type": "string" } },
-            "location_id": { "type": "string" }
+            "location_id": { "type": "string" },
+            "transition": { "type": "string", "enum": ["cut", "dissolve"] }
         },
-        "required": ["line", "image_prompt", "cast_ids", "location_id"]
+        "required": ["line", "image_prompt", "cast_ids", "location_id", "transition"]
     })
 }
 

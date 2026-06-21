@@ -101,6 +101,24 @@ pub struct Cli {
     #[arg(long)]
     no_captions: bool,
 
+    /// Disable cross-dissolve transitions (use hard cuts between every scene).
+    #[arg(long)]
+    no_dissolve: bool,
+
+    /// Per-scene consistency validation: generate candidates and keep the one a vision model judges
+    /// most consistent, re-rolling drifting frames. `off` = one candidate, no judging; `2` (default)
+    /// or `3` = up to that many candidates at up to N× the image cost.
+    #[arg(long, value_name = "off|2|3", value_parser = parse_validate_scene, default_value = "2")]
+    validate_scene: usize,
+
+    /// Disable the cinematic colour grade / film grain applied to the final video.
+    #[arg(long)]
+    no_grade: bool,
+
+    /// Cross-dissolve length in seconds for scriptwriter-flagged still-to-still transitions.
+    #[arg(long, default_value_t = 0.5)]
+    dissolve_seconds: f64,
+
     /// Don't generate spoken narration — produce a silent or music-only video.
     #[arg(long)]
     no_narration: bool,
@@ -142,6 +160,17 @@ pub struct Cli {
     whisper_model: Option<String>,
     #[arg(long)]
     video_model: Option<String>,
+}
+
+/// Parse `--validate-scene`: `off` → 0 (validation disabled, one candidate); `2`/`3` → that many
+/// candidates judged per scene. `1` is rejected — "keep the most consistent" needs ≥2 candidates.
+fn parse_validate_scene(s: &str) -> Result<usize, String> {
+    match s {
+        "off" | "0" => Ok(0),
+        "2" => Ok(2),
+        "3" => Ok(3),
+        _ => Err(format!("expected `off`, `2`, or `3` (got {s:?})")),
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -243,41 +272,75 @@ async fn run(cli: &Cli) -> Result<()> {
         }
     }
 
-    // 2. Audio ----------------------------------------------------------------
-    // Resume reuses the prior audio. Fresh: synthesize the voiceover (the timeline clock), or
-    // build a silent track sized to scene_seconds per scene for a music-only/silent reel.
+    // 2. Audio + word timings -------------------------------------------------
+    // Word timings drive BOTH captions and word-aligned scene cuts, so we compute them whenever
+    // there is narration — even with --no-captions (only the burned-in subtitles are suppressed
+    // downstream in `assemble`). Resume reuses the prior audio.mp3 + words.json. Fresh narration is
+    // synthesized and timed; the preview TTS occasionally truncates a longer narration, so we detect
+    // that via whisper coverage and re-synthesize, keeping the most complete take (so audio.mp3 and
+    // words.json always describe the same audio).
     let audio = dir.join("audio.mp3");
-    if resume {
+    let words_path = dir.join("words.json");
+    let words: Vec<model::WordTiming> = if resume {
         if !audio.exists() {
             bail!("{} has no audio.mp3 to resume from", dir.display());
         }
+        std::fs::read(&words_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     } else if cfg.no_narration {
         let total = cfg.scene_seconds * script.scenes.len() as f64;
         println!("→ no narration: building silent {total:.1}s timeline ...");
         ffmpeg::silent_track(&audio, total)?;
-    } else {
-        println!("→ synthesizing narration ({}) ...", or.tts_model);
-        tts::synthesize(&or, &script.narration, &audio, cli.speed).await?;
-    }
-
-    // 3. Word timings ---------------------------------------------------------
-    // Captions need spoken narration to time against. Resume reuses words.json from the
-    // preview; fresh runs time them with local whisper-timestamped (see transcribe.rs).
-    let words = if cfg.no_narration || cfg.no_captions {
         Vec::new()
-    } else if resume {
-        std::fs::read(dir.join("words.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
     } else {
-        println!(
-            "→ timing captions ({} {}) ...",
-            cfg.whisper_cmd, cfg.whisper_model
-        );
-        let w = transcribe::word_timings(&cfg, &audio, &script.narration, &dir.join("words.json"))?;
-        println!("  {} words timed", w.len());
-        w
+        const TTS_ATTEMPTS: usize = 3;
+        const MIN_COVERAGE: f64 = 0.85; // re-synthesize if whisper heard < 85% of the script
+        let mut best: Option<(Vec<model::WordTiming>, f64, Vec<u8>)> = None;
+        for attempt in 1..=TTS_ATTEMPTS {
+            println!("→ synthesizing narration ({}) ...", or.tts_model);
+            tts::synthesize(&or, &script.narration, &audio, cli.speed).await?;
+            println!(
+                "→ timing narration ({} {}) ...",
+                cfg.whisper_cmd, cfg.whisper_model
+            );
+            let t = transcribe::word_timings(&cfg, &audio, &script.narration, &words_path)?;
+            println!(
+                "  {} words timed (~{:.0}% of the script spoken)",
+                t.words.len(),
+                t.coverage * 100.0
+            );
+            // Keep the most complete take together with its audio so the two stay consistent.
+            if best
+                .as_ref()
+                .map(|(_, c, _)| t.coverage > *c)
+                .unwrap_or(true)
+            {
+                best = Some((t.words, t.coverage, std::fs::read(&audio)?));
+            }
+            if t.coverage >= MIN_COVERAGE {
+                break;
+            }
+            if attempt < TTS_ATTEMPTS {
+                eprintln!(
+                    "  note: narration audio looks truncated (preview TTS cut it short); \
+                     re-synthesizing ({}/{TTS_ATTEMPTS}) ...",
+                    attempt + 1
+                );
+            } else {
+                eprintln!(
+                    "  warning: narration still truncated after {TTS_ATTEMPTS} attempts; \
+                     using the most complete take"
+                );
+            }
+        }
+        let (words, _, audio_bytes) = best.expect("at least one TTS attempt ran");
+        // The last synth on disk may have been a worse take — restore the best take's audio and its
+        // matching timings so everything downstream sees one consistent pair.
+        std::fs::write(&audio, &audio_bytes)?;
+        std::fs::write(&words_path, serde_json::to_vec_pretty(&words)?)?;
+        words
     };
 
     // Caption-timing test mode (fresh runs only): stop before any image/video/music calls.
@@ -332,6 +395,12 @@ async fn run(cli: &Cli) -> Result<()> {
                 );
             }
         }
+        let validate = cli.validate_scene; // 0 = off, 2/3 = candidates/scene
+        if validate >= 2 {
+            println!("  scene validation on: up to {validate} candidates/scene, keeping the most consistent");
+        } else {
+            println!("  scene validation off: one candidate/scene");
+        }
         images::generate(
             &or,
             &script.scenes,
@@ -339,13 +408,14 @@ async fn run(cli: &Cli) -> Result<()> {
             &script.locations,
             cli.character_ref.as_deref(),
             consistency,
+            validate,
             &dir,
         )
         .await?
     };
 
     // 5. Video scenes (optional, non-fatal) -----------------------------------
-    let durations = assemble::scene_durations(&script.scenes, &audio)?;
+    let durations = assemble::scene_durations(&script.scenes, &words, &audio)?;
     let video_count = match cli.video_scenes {
         Some(n) => n.min(script.scenes.len()),
         None if cli.video => script.scenes.len(),
@@ -394,6 +464,9 @@ async fn run(cli: &Cli) -> Result<()> {
         duck,
         music_volume: cli.music_volume,
         captions_on: !cfg.no_captions,
+        dissolve: !cli.no_dissolve,
+        dissolve_seconds: cli.dissolve_seconds,
+        grade: !cli.no_grade,
     })?;
 
     // 8. Poster — a custom, enticing thumbnail (non-fatal) --------------------

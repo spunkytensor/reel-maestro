@@ -58,6 +58,11 @@ pub struct Scene {
     /// When set, the scene is also conditioned on that location's establishing reference image.
     #[serde(default)]
     pub location_id: String,
+    /// How this scene enters from the PREVIOUS one: `"dissolve"` (cross-fade) or `"cut"`/`""`
+    /// (hard cut). Only honored when both neighbors are Ken Burns stills; the first scene's value
+    /// is ignored. Empty = cut, so older `script.json` files render with hard cuts as before.
+    #[serde(default)]
+    pub transition: String,
 }
 
 /// The full plan for one video.

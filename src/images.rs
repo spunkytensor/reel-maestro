@@ -11,11 +11,14 @@
 //! missing reference image still pins the unspecified details (hairstyle, sleeve length, decor).
 
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use image::{imageops, Rgb, RgbImage};
+use serde::Deserialize;
+use serde_json::json;
 
 use crate::model::{Entity, Scene};
 use crate::openrouter::{self, OpenRouter};
@@ -24,6 +27,15 @@ const W: u32 = 1080; // final canvas width  (9:16 vertical)
 const H: u32 = 1920; // final canvas height (9:16 vertical)
 const MAX_CONCURRENT: usize = 4; // in-flight image generations — caps load on the API/our memory
 const MAX_ATTEMPTS: usize = 3; // per-image retries before falling back to a placeholder
+
+/// A consistent photographic "house look" appended to every SCENE and poster prompt so the whole
+/// reel reads as one real shoot rather than a set of independent AI stills. Kept OFF the reference
+/// portraits/establishing shots, which we want clean and sharp for identity/decor anchoring.
+const HOUSE_STYLE: &str = " Photographic style: shot on a full-frame camera with a 50mm lens, \
+     natural realistic skin texture and pores, soft directional key lighting, shallow depth of \
+     field with gentle background bokeh, true-to-life colour, subtle film grain; candid and \
+     photojournalistic. Avoid plastic over-smoothed skin, waxy faces, oversaturation, and any CGI \
+     or illustrated look.";
 
 /// One attached reference image plus a human label of what it anchors. References are listed in
 /// the prompt in the SAME order they're attached so the model can map each image to its identity.
@@ -38,11 +50,26 @@ struct Reference {
 struct SceneCtx<'a> {
     or: &'a OpenRouter,
     chars: &'a [Entity],
-    char_urls: &'a HashMap<String, String>,
+    /// Per-character reference image data URLs (one or more views per id).
+    char_urls: &'a HashMap<String, Vec<String>>,
     loc_urls: &'a HashMap<String, String>,
     locations: &'a [Entity],
     forced_all: bool,
+    /// Per-scene validation effort: `0` = off (one candidate, no judge); `N >= 2` = generate up to N
+    /// candidates, judge each with the vision model, and keep the most consistent (re-rolling).
+    validate: usize,
     dir: &'a Path,
+}
+
+/// The QA vision-judge's verdict on one candidate scene image.
+#[derive(Deserialize)]
+struct Verdict {
+    /// True only if every consistency check passed.
+    consistent: bool,
+    /// 0–100 quality/consistency score (100 = perfect match).
+    score: i64,
+    /// Brief description of any problems found (empty when consistent).
+    issues: String,
 }
 
 /// Generate one image per scene into `dir`, returning their paths in scene order.
@@ -58,6 +85,7 @@ pub async fn generate(
     locations: &[Entity],
     character_ref: Option<&Path>,
     consistency: bool,
+    validate: usize,
     dir: &Path,
 ) -> Result<Vec<PathBuf>> {
     // Build the shared, per-entity reference images once.
@@ -73,6 +101,7 @@ pub async fn generate(
         loc_urls: &loc_urls,
         locations,
         forced_all,
+        validate,
         dir,
     };
     let ctx = &ctx;
@@ -120,11 +149,13 @@ pub async fn generate(
                 .get(scenes[i].location_id.trim())
                 .map(|url| {
                     vec![Reference {
-                        label: "PRIOR PHOTO of this exact location — copy ONLY its room, table \
-                                surface, table settings, props, furniture, lighting, and background \
-                                patrons. IGNORE which people sit at the table in it and their count \
-                                and positions; the people present are defined solely by the PERSON \
-                                references above"
+                        label: "PRIOR PHOTO of this exact location — match its room, table surface, \
+                                furniture, lighting, background, and overall layout. SEATING MUST \
+                                STAY CONSISTENT: keep each recurring person who also appears here on \
+                                the SAME side of the table / in the SAME position as in this photo \
+                                (do NOT swap their left/right sides between scenes); seat any \
+                                newly-added person in a remaining seat. Do not copy in any extra or \
+                                ghost people who are not in the PERSON references above"
                             .to_string(),
                         data_url: url.clone(),
                     }]
@@ -173,14 +204,22 @@ async fn render_scene(
         ctx.locations.iter().find(|l| l.id == scene.location_id)
     };
 
-    // Attach references in a stable order: each present person, the location, then any chained anchor.
+    // Attach references in a stable order: each present person (every view), the location, then any
+    // chained anchor. Each image is labeled so the model binds it to the right subject.
     let mut references: Vec<Reference> = Vec::new();
     for p in &people {
-        if let Some(url) = ctx.char_urls.get(&p.id) {
-            references.push(Reference {
-                label: person_label(p),
-                data_url: url.clone(),
-            });
+        if let Some(views) = ctx.char_urls.get(&p.id) {
+            for (k, url) in views.iter().enumerate() {
+                let label = if views.len() > 1 {
+                    format!("{} — view {}", person_label(p), k + 1)
+                } else {
+                    person_label(p)
+                };
+                references.push(Reference {
+                    label,
+                    data_url: url.clone(),
+                });
+            }
         }
     }
     if let Some(loc) = location {
@@ -193,27 +232,169 @@ async fn render_scene(
     }
     references.extend(chained.iter().cloned());
 
-    let img = match generate_one(
-        ctx.or,
-        &scene.image_prompt,
-        &people,
-        location,
-        &references,
-        &format!("scene {i}"),
-    )
-    .await
-    {
-        Some(img) => img,
-        None => {
-            eprintln!("  scene {i}: image generation failed after {MAX_ATTEMPTS} tries; using placeholder");
-            placeholder(i)
+    let label = format!("scene {i}");
+    // Per-scene validation: when `validate >= 1` a vision judge scores each candidate and we keep
+    // the most consistent, re-rolling up to `validate` candidates and stopping early on a
+    // fully-consistent one. `validate == 0` skips the judge (one candidate). A scene with no
+    // references has nothing to compare against, so validation is a no-op there regardless.
+    let validate = ctx.validate >= 1 && !references.is_empty();
+    let attempts = ctx.validate.max(1);
+    let mut best: Option<(RgbImage, i64)> = None;
+    for attempt in 1..=attempts {
+        let Some(img) = generate_one(
+            ctx.or,
+            &scene.image_prompt,
+            &people,
+            location,
+            &references,
+            true,
+            &label,
+        )
+        .await
+        else {
+            continue;
+        };
+        if !validate {
+            best = Some((img, 0));
+            break;
         }
-    };
+        let Some(url) = jpeg_data_url(&img) else {
+            // Can't encode this candidate to judge it — fall back to it only if we have nothing
+            // better already in hand (never clobber a previously judged, higher-scoring candidate).
+            if best.is_none() {
+                best = Some((img, 0));
+            }
+            break;
+        };
+        match judge_scene(ctx.or, &url, &people, location, &references, &label).await {
+            Some(v) => {
+                if best.as_ref().map(|(_, s)| v.score > *s).unwrap_or(true) {
+                    best = Some((img, v.score));
+                }
+                if v.consistent || attempt == attempts {
+                    break; // good enough, or out of re-rolls
+                }
+                eprintln!(
+                    "  {label}: QA score {} ({}); re-roll {}/{}",
+                    v.score, v.issues, attempt, attempts
+                );
+            }
+            None => {
+                // Judge unavailable (non-fatal) — keep this candidate only if we have nothing
+                // better, then stop re-rolling (no point paying while the judge is down).
+                if best.is_none() {
+                    best = Some((img, 0));
+                }
+                break;
+            }
+        }
+    }
+
+    let img = best.map(|(im, _)| im).unwrap_or_else(|| {
+        eprintln!("  {label}: image generation failed after retries; using placeholder");
+        placeholder(i)
+    });
     if let Err(e) = img.save(&path) {
-        eprintln!("  scene {i}: saving image failed ({e}); writing placeholder");
+        eprintln!("  {label}: saving image failed ({e}); writing placeholder");
         let _ = placeholder(i).save(&path);
     }
     path
+}
+
+/// Encode an in-memory image to a JPEG data URL (for sending a generated candidate back to the
+/// vision judge). Returns `None` if encoding fails.
+fn jpeg_data_url(img: &RgbImage) -> Option<String> {
+    let mut buf = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img.clone())
+        .write_to(&mut buf, image::ImageFormat::Jpeg)
+        .ok()?;
+    Some(openrouter::data_url_from_image(&buf.into_inner()))
+}
+
+/// Ask the text model (multimodal) whether a candidate scene matches its references. Returns the
+/// verdict, or `None` if the judge call fails (caller treats that as "keep the candidate").
+async fn judge_scene(
+    or: &OpenRouter,
+    candidate_url: &str,
+    people: &[&Entity],
+    location: Option<&Entity>,
+    references: &[Reference],
+    label: &str,
+) -> Option<Verdict> {
+    let mut instruction = String::from(
+        "The FIRST image is the CANDIDATE scene to check. The labeled images after it are the \
+         references it must match. Verify ALL of: (a) each listed person matches their reference — \
+         face, hair (incl. worn up/down), build, age, and full outfit including sleeve length; \
+         (b) the setting matches the location for its FIXED elements only — decor, \
+         architecture, furniture, built-in fixtures, wall-mounted items, materials, colour palette, \
+         and lighting. Treat BOTH the LOCATION reference AND any PRIOR PHOTO of this location as \
+         authoritative for these fixed elements — a PRIOR PHOTO often shows room details the clean \
+         LOCATION reference omits: a shelf, bookshelf, wall art, light fixture, rug, or piece of \
+         furniture that is clearly visible in EITHER reference must also appear (same place, same \
+         form) in the candidate, so flag it when the candidate clearly drops, moves, or alters such \
+         a fixed element. IGNORE transient/movable items (glasses, water levels, menus, plates, \
+         cutlery, food, folded laundry, draped clothing) and the exact camera angle, framing, and \
+         zoom — these naturally change between scenes and are NOT inconsistencies. If a PRIOR PHOTO \
+         of this location is provided, the recurring people must ALSO keep the SAME seating/standing \
+         arrangement as in it: flag a clear left/right SWAP of who is on which side, while still \
+         allowing pure camera-angle or zoom differences; (c) the listed recurring \
+         people are the FOCAL subjects, each matching \
+         their reference, with none missing and no EXTRA featured/foreground person, and no ghosted, \
+         faded, translucent, duplicated, merged, or cloned figures. Natural ambient BACKGROUND people \
+         (other diners, pedestrians, a passing crowd) in a public setting are EXPECTED and are NOT a \
+         violation — do not flag them; (d) it is a single unified photo (no split-screen/collage). \
+         Judge ONLY what is visible: if a reference detail is out of frame, cropped, occluded, or too \
+         dark/small to make out (e.g. shoes hidden under a table), treat it as not-shown and do NOT \
+         penalize it — flag a detail only when it is clearly visible AND contradicts the reference. ",
+    );
+    if !people.is_empty() {
+        instruction.push_str("People who must appear: ");
+        for p in people {
+            instruction.push_str(&format!("[{}] {}; ", p.id, p.description));
+        }
+    }
+    if let Some(loc) = location {
+        instruction.push_str(&format!("Setting: {}. ", loc.description));
+    }
+    instruction.push_str(
+        "Set consistent=true only if ALL checks pass. score is 0-100 (100 = perfect). issues = a \
+         brief description of any problem, or empty when consistent.",
+    );
+
+    let mut images = vec![(
+        "CANDIDATE scene image (the one to check)".to_string(),
+        candidate_url.to_string(),
+    )];
+    for r in references {
+        images.push((format!("REFERENCE — {}", r.label), r.data_url.clone()));
+    }
+
+    let schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "consistent": { "type": "boolean" },
+            "score": { "type": "integer" },
+            "issues": { "type": "string" }
+        },
+        "required": ["consistent", "score", "issues"]
+    });
+    match or
+        .judge_json::<Verdict>(
+            "You are a strict visual-continuity checker for short-video scene images.",
+            &instruction,
+            &images,
+            "verdict",
+            schema,
+        )
+        .await
+    {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("  {label}: QA judge unavailable ({e}); keeping candidate");
+            None
+        }
+    }
 }
 
 /// Generate a custom cover/thumbnail image from `prompt`, conditioned on `references` (the
@@ -242,7 +423,7 @@ pub async fn generate_poster(
             data_url: url.clone(),
         })
         .collect();
-    let img = generate_one(or, prompt, &people, None, &refs, "poster").await?;
+    let img = generate_one(or, prompt, &people, None, &refs, true, "poster").await?;
     let path = dir.join("poster.jpg");
     img.save(&path).ok()?;
     Some(path)
@@ -269,7 +450,7 @@ async fn build_references(
     dir: &Path,
 ) -> (
     Vec<Entity>,
-    HashMap<String, String>,
+    HashMap<String, Vec<String>>,
     HashMap<String, String>,
     bool,
 ) {
@@ -284,17 +465,17 @@ async fn build_references(
         forced_all = true;
     }
 
-    let mut char_urls: HashMap<String, String> = HashMap::new();
+    let mut char_urls: HashMap<String, Vec<String>> = HashMap::new();
     for (i, c) in effective.iter().enumerate() {
         // The user photo overrides the FIRST character's reference; the rest are generated.
         let photo = if i == 0 { character_ref } else { None };
         match build_character_ref(or, c, photo, dir).await {
-            Some(url) => {
+            Some(urls) => {
                 // Mirror the primary character to the legacy `character-ref.jpg` the poster reads.
                 if i == 0 {
                     mirror_primary(dir, c, photo);
                 }
-                char_urls.insert(c.id.clone(), url);
+                char_urls.insert(c.id.clone(), urls);
             }
             None => eprintln!(
                 "  note: no reference for character \"{}\"; scenes will rely on its text description",
@@ -338,10 +519,10 @@ async fn build_character_ref(
     entity: &Entity,
     photo: Option<&Path>,
     dir: &Path,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     if let Some(p) = photo {
         return match std::fs::read(p) {
-            Ok(bytes) => Some(openrouter::data_url_from_image(&bytes)),
+            Ok(bytes) => Some(vec![openrouter::data_url_from_image(&bytes)]),
             Err(e) => {
                 eprintln!(
                     "  note: could not read --character-ref {}: {e}",
@@ -361,20 +542,50 @@ async fn build_character_ref(
          sharp focus, subject centered and fully visible.",
         entity.description
     );
-    let img = generate_one(
+    // Front portrait (the primary anchor, saved as character-<id>.jpg).
+    let front = generate_one(
         or,
         &prompt,
         &[],
         None,
         &[],
+        false,
         &format!("character \"{}\"", entity.id),
     )
     .await?;
-    let path = dir.join(format!("character-{}.jpg", slug(&entity.id)));
-    img.save(&path).ok()?;
-    std::fs::read(&path)
-        .ok()
-        .map(|b| openrouter::data_url_from_image(&b))
+    let front_path = dir.join(format!("character-{}.jpg", slug(&entity.id)));
+    front.save(&front_path).ok()?;
+    let mut urls = match std::fs::read(&front_path) {
+        Ok(b) => vec![openrouter::data_url_from_image(&b)],
+        Err(_) => return None,
+    };
+
+    // A second 3/4 view gives the model a fuller sense of identity, which holds far better across
+    // varied poses/angles than a single frontal portrait. Non-fatal: skip it if it fails.
+    let prompt_b = format!(
+        "A three-quarter angle reference photograph of the SAME person, same identity and outfit: \
+         {}. Plain neutral background, sharp focus, head and torso visible.",
+        entity.description
+    );
+    if let Some(side) = generate_one(
+        or,
+        &prompt_b,
+        &[],
+        None,
+        &[],
+        false,
+        &format!("character \"{}\" (3/4 view)", entity.id),
+    )
+    .await
+    {
+        let side_path = dir.join(format!("character-{}-b.jpg", slug(&entity.id)));
+        if side.save(&side_path).is_ok() {
+            if let Ok(b) = std::fs::read(&side_path) {
+                urls.push(openrouter::data_url_from_image(&b));
+            }
+        }
+    }
+    Some(urls)
 }
 
 /// Produce a recurring location's establishing reference (no people) as a data URL, generated from
@@ -398,6 +609,7 @@ async fn build_location_ref(or: &OpenRouter, entity: &Entity, dir: &Path) -> Opt
         &[],
         None,
         &[],
+        false,
         &format!("location \"{}\"", entity.id),
     )
     .await?;
@@ -416,6 +628,7 @@ fn build_image_prompt(
     people: &[&Entity],
     location: Option<&Entity>,
     references: &[Reference],
+    style: bool,
 ) -> String {
     // An explicit instruction makes image-output models far less likely to reply with text.
     let mut prompt = String::from(
@@ -428,15 +641,13 @@ fn build_image_prompt(
     );
 
     if !references.is_empty() {
-        // List each attached reference in order, then lock identities/setting and forbid the
-        // classic failure modes (cloning the anchor as a second subject, merging/duplicating
-        // people, or applying a recurring identity to a one-off stranger).
-        prompt.push_str(" Attached reference images, in order: ");
-        for (i, r) in references.iter().enumerate() {
-            prompt.push_str(&format!("{}) {}; ", i + 1, r.label));
-        }
+        // Each reference image is attached inline immediately after its own label, so the model
+        // already knows which image is which. Restate the locks and forbid the classic failure
+        // modes (cloning the anchor as a second subject, merging/duplicating people, applying a
+        // recurring identity to a one-off stranger).
         prompt.push_str(
-            "Match each attached reference EXACTLY — for every PERSON keep the same face, hair, \
+            " Each attached image is preceded by a label naming what it anchors. \
+             Match each attached reference EXACTLY — for every PERSON keep the same face, hair, \
              build, age, and complete outfit (including sleeve length); for the LOCATION keep the \
              same decor, materials, colour palette, and lighting. Depict each listed person exactly \
              once: never duplicate or merge them (no twins, no extra or merged heads, limbs, or \
@@ -466,6 +677,9 @@ fn build_image_prompt(
         }
     }
 
+    if style {
+        prompt.push_str(HOUSE_STYLE);
+    }
     prompt.push_str(&format!(" Scene: {image_prompt}"));
     prompt
 }
@@ -478,13 +692,18 @@ async fn generate_one(
     people: &[&Entity],
     location: Option<&Entity>,
     references: &[Reference],
+    style: bool,
     label: &str,
 ) -> Option<RgbImage> {
-    let prompt = build_image_prompt(image_prompt, people, location, references);
-    let ref_urls: Vec<String> = references.iter().map(|r| r.data_url.clone()).collect();
+    let prompt = build_image_prompt(image_prompt, people, location, references, style);
+    // Pass each reference as (label, data_url) so the model receives the label inline before its image.
+    let labeled: Vec<(String, String)> = references
+        .iter()
+        .map(|r| (format!("Reference image — {}", r.label), r.data_url.clone()))
+        .collect();
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match or.generate_image(&prompt, &ref_urls).await {
+        match or.generate_image(&prompt, &labeled).await {
             Ok(bytes) => match crop_to_vertical(&bytes) {
                 Ok(img) => return Some(img),
                 Err(e) => {
@@ -587,33 +806,44 @@ mod tests {
                 data_url: "y".to_string(),
             },
         ];
-        let p = build_image_prompt("they laugh at a table", &people, None, &refs);
-        assert!(p.contains("Attached reference images, in order"));
-        assert!(p.contains("1) PERSON \"man\""));
-        assert!(p.contains("2) PERSON \"date\""));
+        let p = build_image_prompt("they laugh at a table", &people, None, &refs, false);
+        // References are labeled inline (in the API payload), so the prompt restates the locks
+        // rather than enumerating images by number.
+        assert!(p.contains("Each attached image is preceded by a label"));
+        assert!(p.contains("Match each attached reference EXACTLY"));
         assert!(p.contains("DIFFERENT individual"));
         // Canonical text lock repeats the fixed traits.
         assert!(p.contains("keep EXACTLY consistent"));
         assert!(p.contains("black hair in a low bun"));
         assert!(p.contains("Scene: they laugh at a table"));
+        // style=false → no house-style suffix.
+        assert!(!p.contains("Photographic style"));
+    }
+
+    #[test]
+    fn house_style_only_when_enabled() {
+        assert!(build_image_prompt("a street", &[], None, &[], true).contains("Photographic style"));
+        assert!(
+            !build_image_prompt("a street", &[], None, &[], false).contains("Photographic style")
+        );
     }
 
     #[test]
     fn prompt_injects_location_text_lock() {
         let loc = ent("bistro", "exposed brick, brass lights, amber palette");
-        let p = build_image_prompt("a candlelit table", &[], Some(&loc), &[]);
+        let p = build_image_prompt("a candlelit table", &[], Some(&loc), &[], false);
         assert!(p.contains(
             "Setting, keep EXACTLY consistent: exposed brick, brass lights, amber palette"
         ));
-        // No references attached -> no reference block.
-        assert!(!p.contains("Attached reference images"));
+        // No references attached -> no reference lock block.
+        assert!(!p.contains("Match each attached reference"));
     }
 
     #[test]
     fn prompt_without_entities_is_independent() {
         // No recurring people/location and no references: a plain, independent generation.
-        let p = build_image_prompt("a bustling crowd", &[], None, &[]);
-        assert!(!p.contains("Attached reference images"));
+        let p = build_image_prompt("a bustling crowd", &[], None, &[], false);
+        assert!(!p.contains("Match each attached reference"));
         assert!(!p.contains("keep EXACTLY consistent"));
         assert!(p.contains("Scene: a bustling crowd"));
     }
@@ -625,6 +855,7 @@ mod tests {
             image_prompt: String::new(),
             cast_ids: Vec::new(),
             location_id: loc.to_string(),
+            transition: String::new(),
         };
         // scenes: [none, none, bistro, bistro, bistro] → bistro's anchor is index 2.
         let scenes = vec![sc(""), sc(""), sc("bistro"), sc("bistro"), sc("bistro")];

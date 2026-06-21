@@ -53,6 +53,13 @@ pub struct BuildOptions<'a> {
     pub music_volume: f64,
     /// Master switch for burning captions. When `false` no subtitle file is produced.
     pub captions_on: bool,
+    /// Enable cross-dissolve transitions between consecutive Ken Burns stills the scriptwriter
+    /// flagged (`Scene::transition == "dissolve"`). `false` forces plain hard cuts everywhere.
+    pub dissolve: bool,
+    /// Cross-dissolve length in seconds (clamped per junction in `render_reel`).
+    pub dissolve_seconds: f64,
+    /// Apply the unified cinematic colour grade / grain and cross-scene exposure match.
+    pub grade: bool,
 }
 
 /// Build `reel.mp4` in `dir`. `images` are scene stills in order; `audio` and the
@@ -69,13 +76,17 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
         duck,
         music_volume,
         captions_on,
+        dissolve,
+        dissolve_seconds,
+        grade,
     } = opts;
 
     if images.is_empty() {
         bail!("no scene images to assemble");
     }
-    // Slice the audio timeline into one duration per scene (see `scene_durations`).
-    let durations = scene_durations(scenes, audio)?;
+    // Slice the audio timeline into one duration per scene, snapped to real word timings so cuts
+    // land on the voiceover beats (see `scene_durations`).
+    let durations = scene_durations(scenes, words, audio)?;
 
     // Write captions only when enabled and there are timed words to show. The returned
     // `Some(name)` signals render_reel to burn this ASS file in; `None` skips the subtitles
@@ -101,6 +112,10 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
         })
         .collect();
 
+    // Decide which scene junctions cross-dissolve (only between two consecutive stills the
+    // scriptwriter flagged); everything else stays a hard cut.
+    let dissolves = dissolve_plan(scenes, &media, dissolve);
+
     let audio_name = audio.file_name().unwrap().to_string_lossy().into_owned();
     let music_name = music.map(basename);
 
@@ -113,6 +128,9 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
         dir,
         media: &media,
         durations: &durations,
+        dissolves: &dissolves,
+        dissolve_seconds,
+        grade,
         audio: &audio_name,
         music: music_name.as_deref(),
         duck,
@@ -124,48 +142,113 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     Ok(dir.join(output))
 }
 
-/// Per-scene durations in seconds, each scene's slice of the audio timeline (proportional to
-/// its narration word count). Every duration is floored at 0.5s so a one-word scene still gets
-/// a visible beat. Exposed (not private) so the video step can size its Veo clips to match the
-/// exact slot each scene will occupy in the final reel.
-pub fn scene_durations(scenes: &[Scene], audio: &Path) -> Result<Vec<f64>> {
+/// Per-scene durations in seconds. Each scene is shown while its narration line is actually being
+/// spoken (boundaries snapped to the real word-level timestamps in `words`), falling back to a
+/// word-count proportion when no timings exist (silent/no-narration). Every duration is floored at
+/// 0.5s so a one-word scene still gets a visible beat. Exposed (not private) so the video step can
+/// size its Veo clips to match the exact slot each scene will occupy in the final reel.
+pub fn scene_durations(scenes: &[Scene], words: &[WordTiming], audio: &Path) -> Result<Vec<f64>> {
     let total = ffmpeg::duration_s(audio)?;
-    Ok(scene_windows(scenes, total)
+    Ok(scene_windows(scenes, words, total)
         .into_iter()
         .map(|(start, end)| (end - start).max(0.5))
         .collect())
 }
 
-/// Assign each scene a `[start, end)` window (in seconds) over the total audio duration,
-/// proportional to its narration word count — so a scene that speaks twice as many words gets
-/// roughly twice the screen time, keeping visuals loosely in sync with the voiceover.
+/// Assign each scene a `[start, end)` window (in seconds) over the audio timeline. A scene's window
+/// starts when its FIRST narration word is actually spoken — `words[k].start_s` for the cumulative
+/// word index `k` at that scene's boundary — so visual cuts land on the real voiceover beats
+/// (pauses, emphasis, varying speech rate) instead of an even word-count split. This is what keeps
+/// a comedic "…and then, reality" beat from cutting early.
 ///
-/// Boundaries are computed from the *cumulative* word count rather than by summing per-scene
-/// durations, so rounding never drifts and adjacent windows always meet exactly. The final
-/// scene is pinned to `total` so the visuals cover the audio to the very end with no gap.
-fn scene_windows(scenes: &[Scene], total: f64) -> Vec<(f64, f64)> {
+/// When there are no real timings (silent / `--no-narration`), or the scene word counts don't line
+/// up with the timed words, it falls back to the cumulative word-count proportion. The boundary
+/// index maps proportionally into `words` so a count mismatch degrades gracefully rather than
+/// collapsing late scenes. The final scene is pinned to `total` so the visuals cover the audio end.
+fn scene_windows(scenes: &[Scene], words: &[WordTiming], total: f64) -> Vec<(f64, f64)> {
     // Word count per scene; `.max(1)` guarantees a blank/empty line still claims a share
     // (and avoids a divide-by-zero if every line were empty).
     let counts: Vec<usize> = scenes
         .iter()
         .map(|s| s.line.split_whitespace().count().max(1))
         .collect();
-    let sum: usize = counts.iter().sum();
-
-    let mut windows = Vec::with_capacity(scenes.len());
-    let mut cum = 0usize; // words consumed by all preceding scenes
-    for (i, &c) in counts.iter().enumerate() {
-        // Fraction of the timeline up to this scene's start = words before it / total words.
-        let start = total * (cum as f64) / (sum as f64);
-        cum += c;
-        let end = if i == scenes.len() - 1 {
-            total // pin the last scene to the end so visuals fully cover the audio
-        } else {
-            total * (cum as f64) / (sum as f64)
-        };
-        windows.push((start, end));
+    let total_words: usize = counts.iter().sum();
+    // Cumulative narration-word index at the start of each scene (`first_word[i]`).
+    let mut first_word = Vec::with_capacity(scenes.len() + 1);
+    first_word.push(0usize);
+    for &c in &counts {
+        first_word.push(first_word.last().unwrap() + c);
     }
-    windows
+    // Word timings are usable only if present AND trustworthy. whisper-timestamped sometimes
+    // under-transcribes the tail, and the aligner pins the dropped narration words onto a single
+    // timestamp (zero-duration) — trusting that would cram those scenes into a one-frame flash.
+    // When too many words are zero-duration, fall back to the robust word-count proportion (which
+    // ignores timings and spaces scenes evenly), the same behavior we had before word-alignment.
+    let zero_dur = words.iter().filter(|w| w.end_s <= w.start_s + 1e-3).count();
+    let degenerate = !words.is_empty() && zero_dur * 100 > words.len() * 15; // >15% zero-duration
+    if degenerate {
+        eprintln!(
+            "  note: word timings look unreliable ({zero_dur}/{} words have no duration); \
+             spacing scenes by word count instead",
+            words.len()
+        );
+    }
+    let use_words = !words.is_empty() && total_words > 0 && !degenerate;
+
+    // Time scene `i` starts: when its first word is spoken (or the proportional fallback).
+    let start_of = |i: usize| -> f64 {
+        if i == 0 {
+            return 0.0; // first scene always covers from the very beginning
+        }
+        if use_words {
+            // Map the scene's word boundary onto the timed-word array (exact when counts match the
+            // timed-word count; proportional otherwise).
+            let frac = first_word[i] as f64 / total_words as f64;
+            let wi = ((frac * words.len() as f64).round() as usize).min(words.len() - 1);
+            return words[wi].start_s.clamp(0.0, total);
+        }
+        total * (first_word[i] as f64) / (total_words as f64)
+    };
+
+    // Materialize each scene's start, forced non-decreasing. Whisper timestamps are normally
+    // monotonic, but a noisy/out-of-order one (or a word-count vs timed-word mismatch) could pull a
+    // later boundary earlier; clamping to the running max keeps adjacent windows from overlapping.
+    // With monotonic starts and the last scene pinned to `total`, the windows tile [0, total]
+    // exactly and the durations sum to the audio length (before the 0.5s floor in `scene_durations`).
+    let mut starts = Vec::with_capacity(scenes.len());
+    let mut prev = 0.0_f64;
+    for i in 0..scenes.len() {
+        let s = start_of(i).max(prev);
+        starts.push(s);
+        prev = s;
+    }
+    (0..scenes.len())
+        .map(|i| {
+            let end = if i == scenes.len() - 1 {
+                total // pin the last scene to the end so visuals fully cover the audio
+            } else {
+                starts[i + 1]
+            };
+            (starts[i], end.max(starts[i]))
+        })
+        .collect()
+}
+
+/// Decide, for each scene junction `j` (between scene `j` and `j+1`), whether to cross-dissolve.
+/// A dissolve is used only when transitions are `enabled`, the scriptwriter flagged the *incoming*
+/// scene with `transition == "dissolve"`, and BOTH neighbors are Ken Burns stills (a junction
+/// touching a video clip always hard-cuts). Returns a vector of length `scenes.len() - 1`.
+fn dissolve_plan(scenes: &[Scene], media: &[ffmpeg::SceneMedia], enabled: bool) -> Vec<bool> {
+    if !enabled || scenes.len() < 2 {
+        return vec![false; scenes.len().saturating_sub(1)];
+    }
+    (0..scenes.len() - 1)
+        .map(|j| {
+            scenes[j + 1].transition == "dissolve"
+                && matches!(media[j], ffmpeg::SceneMedia::Still(_))
+                && matches!(media[j + 1], ffmpeg::SceneMedia::Still(_))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -173,6 +256,110 @@ mod tests {
     use super::*;
     use crate::model::{Scene, WordTiming};
     use std::process::Command;
+
+    fn scene_with(transition: &str) -> Scene {
+        Scene {
+            line: "w".into(),
+            image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: transition.to_string(),
+        }
+    }
+
+    #[test]
+    fn scene_windows_snap_to_word_timestamps() {
+        let sc = |line: &str| Scene {
+            line: line.into(),
+            image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: String::new(),
+        };
+        let word = |w: &str, s: f64, e: f64| WordTiming {
+            word: w.into(),
+            start_s: s,
+            end_s: e,
+        };
+        // Two scenes, two words each — but a long PAUSE before the second scene's first word.
+        let scenes = vec![sc("in my"), sc("head reality")];
+        let words = vec![
+            word("in", 0.0, 0.4),
+            word("my", 0.4, 0.8),
+            word("head", 3.0, 3.4), // <- 2.2s pause; scene 2 starts here, not at the word midpoint
+            word("reality", 3.4, 4.0),
+        ];
+        let w = scene_windows(&scenes, &words, 4.0);
+        // Word-count proportion would cut at 2.0 (half the words); real timing cuts at 3.0.
+        assert!(
+            (w[0].1 - 3.0).abs() < 1e-6,
+            "scene 1 should end at 3.0, got {}",
+            w[0].1
+        );
+        assert!(
+            (w[1].0 - 3.0).abs() < 1e-6,
+            "scene 2 should start at 3.0, got {}",
+            w[1].0
+        );
+        assert!((w[1].1 - 4.0).abs() < 1e-6); // last scene pinned to total
+
+        // No timings → falls back to the even word-count proportion (boundary at 2.0).
+        let w = scene_windows(&scenes, &[], 4.0);
+        assert!(
+            (w[0].1 - 2.0).abs() < 1e-6,
+            "fallback should cut at 2.0, got {}",
+            w[0].1
+        );
+
+        // Degenerate timings (scene 2's words pinned to one zero-duration timestamp, as when
+        // whisper under-transcribes the tail) must NOT cram — fall back to even spacing.
+        let crammed = vec![
+            word("in", 0.0, 0.4),
+            word("my", 0.4, 0.8),
+            word("head", 0.8, 0.8), // collapsed, zero-duration ...
+            word("reality", 0.8, 0.8),
+        ];
+        let w = scene_windows(&scenes, &crammed, 4.0);
+        assert!(
+            (w[0].1 - 2.0).abs() < 1e-6,
+            "degenerate timings should fall back to even spacing (2.0), got {}",
+            w[0].1
+        );
+        assert!((w[1].1 - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dissolve_plan_gates_on_transition_and_stills() {
+        // A junction is owned by the INCOMING scene's `transition`: junction j uses scenes[j+1].
+        let scenes = vec![
+            scene_with("cut"),
+            scene_with("dissolve"),
+            scene_with("dissolve"),
+            scene_with("cut"),
+        ];
+        let still = |n: &str| ffmpeg::SceneMedia::Still(n.to_string());
+        let clip = |n: &str| ffmpeg::SceneMedia::Clip(n.to_string());
+
+        // All stills: junctions 0 and 1 dissolve (scenes 1,2 flagged), junction 2 cuts (scene 3).
+        let all_stills = vec![still("a"), still("b"), still("c"), still("d")];
+        assert_eq!(
+            dissolve_plan(&scenes, &all_stills, true),
+            vec![true, true, false]
+        );
+
+        // A clip at index 2 forces both junctions touching it (1 and 2) to hard cuts.
+        let with_clip = vec![still("a"), still("b"), clip("c"), still("d")];
+        assert_eq!(
+            dissolve_plan(&scenes, &with_clip, true),
+            vec![true, false, false]
+        );
+
+        // Disabled → all cuts regardless of flags.
+        assert_eq!(
+            dissolve_plan(&scenes, &all_stills, false),
+            vec![false, false, false]
+        );
+    }
 
     /// Full render-path smoke test using synthetic inputs — NO network/API calls.
     /// Requires `ffmpeg`/`ffprobe` on PATH. Ignored by default; run explicitly with:
@@ -218,18 +405,21 @@ mod tests {
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
                 location_id: String::new(),
+                transition: String::new(),
             },
             Scene {
                 line: "four five six".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
                 location_id: String::new(),
+                transition: String::new(),
             },
             Scene {
                 line: "seven eight nine".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
                 location_id: String::new(),
+                transition: String::new(),
             },
         ];
         let labels = [
@@ -257,6 +447,9 @@ mod tests {
             duck: true,
             music_volume: 0.5,
             captions_on: true,
+            dissolve: false,
+            dissolve_seconds: 0.5,
+            grade: false,
         })
         .unwrap();
         assert!(reel.exists(), "reel.mp4 was not produced");
@@ -288,6 +481,77 @@ mod tests {
             reel.display(),
             dims.trim()
         );
+    }
+
+    /// The cross-dissolve timing guard: a still→still dissolve must NOT change total length, since
+    /// audio is the master clock. Renders 3 stills with scene[1] flagged `dissolve` and asserts the
+    /// output is still ~6s (= the audio). NO network; requires ffmpeg. Run with:
+    ///   cargo test dissolve_smoke -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dissolve_smoke() {
+        let dir = std::env::temp_dir().join("reelmaestro_dissolve_smoke");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let colors = [[200u8, 70, 70], [70, 150, 200], [90, 180, 100]];
+        let mut images = Vec::new();
+        for (i, c) in colors.iter().enumerate() {
+            let img = image::RgbImage::from_pixel(1080, 1920, image::Rgb(*c));
+            let p = dir.join(format!("scene-{i:02}.jpg"));
+            img.save(&p).unwrap();
+            images.push(p);
+        }
+
+        let audio = dir.join("audio.mp3");
+        let ok = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=6",
+            ])
+            .arg(&audio)
+            .status()
+            .expect("ffmpeg must be installed to run this test");
+        assert!(ok.success(), "failed to synthesize test audio");
+
+        // Order matters: a CUT before a DISSOLVE exercises the concat→xfade junction (whose input
+        // timebases differ) — a leading dissolve would not catch it. Scene 1 cuts, scene 2 dissolves.
+        let mut scenes = vec![scene_with("cut"), scene_with("cut"), scene_with("dissolve")];
+        for (s, line) in scenes.iter_mut().zip(["one two", "three four", "five six"]) {
+            s.line = line.into();
+        }
+
+        let no_clips = vec![None; images.len()];
+        let reel = build(BuildOptions {
+            dir: &dir,
+            scenes: &scenes,
+            images: &images,
+            clips: &no_clips,
+            words: &[],
+            audio: &audio,
+            music: None,
+            duck: true,
+            music_volume: 0.5,
+            captions_on: false,
+            dissolve: true,
+            dissolve_seconds: 0.5,
+            grade: true, // also exercises the grade/grain/vignette + exposure-match graph
+        })
+        .unwrap();
+        assert!(reel.exists(), "reel.mp4 was not produced");
+
+        // The crossfade must NOT shrink the timeline: total stays ~= the 6s audio.
+        let dur = ffmpeg::duration_s(&reel).unwrap();
+        assert!(
+            (dur - 6.0).abs() < 0.4,
+            "cross-dissolve changed total duration: {dur} (expected ~6.0)"
+        );
+        println!("dissolve_smoke OK -> {} ({dur:.2}s)", reel.display());
     }
 
     /// Exercises the soundtrack mixing filter graph (both duck and low modes) with a
@@ -345,6 +609,7 @@ mod tests {
             image_prompt: String::new(),
             cast_ids: Vec::new(),
             location_id: String::new(),
+            transition: String::new(),
         }];
         let words: Vec<WordTiming> = (0..6)
             .map(|i| WordTiming {
@@ -366,6 +631,9 @@ mod tests {
                 duck,
                 music_volume: 0.6,
                 captions_on: true,
+                dissolve: false,
+                dissolve_seconds: 0.5,
+                grade: false,
             })
             .unwrap();
             assert!(reel.exists());
@@ -458,12 +726,14 @@ mod tests {
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
                 location_id: String::new(),
+                transition: String::new(),
             },
             Scene {
                 line: "five six seven eight".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
                 location_id: String::new(),
+                transition: String::new(),
             },
         ];
         let words: Vec<WordTiming> = (0..8)
@@ -487,6 +757,9 @@ mod tests {
             duck: true,
             music_volume: 0.5,
             captions_on: true,
+            dissolve: false,
+            dissolve_seconds: 0.5,
+            grade: false,
         })
         .unwrap();
         assert!(reel.exists());
@@ -535,6 +808,7 @@ mod tests {
             image_prompt: String::new(),
             cast_ids: Vec::new(),
             location_id: String::new(),
+            transition: String::new(),
         }];
         // No words, captions disabled.
         let reel = build(BuildOptions {
@@ -548,6 +822,9 @@ mod tests {
             duck: true,
             music_volume: 0.8,
             captions_on: false,
+            dissolve: false,
+            dissolve_seconds: 0.5,
+            grade: false,
         })
         .unwrap();
         assert!(reel.exists());
@@ -597,6 +874,7 @@ mod tests {
             image_prompt: String::new(),
             cast_ids: Vec::new(),
             location_id: String::new(),
+            transition: String::new(),
         }];
         let images = vec![dir.join("scene-00.jpg")]; // unused (clip wins)
         let reel = build(BuildOptions {
@@ -610,6 +888,9 @@ mod tests {
             duck: true,
             music_volume: 0.8,
             captions_on: false,
+            dissolve: false,
+            dissolve_seconds: 0.5,
+            grade: false,
         })
         .unwrap();
 
@@ -657,6 +938,7 @@ mod tests {
             image_prompt: String::new(),
             cast_ids: Vec::new(),
             location_id: String::new(),
+            transition: String::new(),
         }];
         let reel = build(BuildOptions {
             dir: &dir,
@@ -669,6 +951,9 @@ mod tests {
             duck: true,
             music_volume: 0.8,
             captions_on: false,
+            dissolve: false,
+            dissolve_seconds: 0.5,
+            grade: false,
         })
         .unwrap();
 
