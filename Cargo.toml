@@ -1,6 +1,6 @@
 [package]
 name = "reelmaestro"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 rust-version = "1.88"
 description = "A simple CLI that turns an idea into a vertical TikTok-style video with AI-generated audio, images, and captions via OpenRouter."
