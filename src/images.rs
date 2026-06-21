@@ -139,13 +139,21 @@ pub async fn generate(
         out[i] = Some(p);
     }
 
-    Ok(out.into_iter().map(|p| p.expect("every scene rendered")).collect())
+    Ok(out
+        .into_iter()
+        .map(|p| p.expect("every scene rendered"))
+        .collect())
 }
 
 /// Render one scene to `scene-NN.jpg` and return its path. Conditions on the recurring entities it
 /// contains (people + location references), plus any `chained` references (a same-location anchor).
 /// Always leaves a usable file on disk — a placeholder if generation or saving fails.
-async fn render_scene(ctx: &SceneCtx<'_>, i: usize, scene: &Scene, chained: &[Reference]) -> PathBuf {
+async fn render_scene(
+    ctx: &SceneCtx<'_>,
+    i: usize,
+    scene: &Scene,
+    chained: &[Reference],
+) -> PathBuf {
     let path = ctx.dir.join(format!("scene-{i:02}.jpg"));
 
     // Which recurring characters appear here: the scene's own ids, or — when the user pinned a

@@ -419,10 +419,18 @@ fn describe_video_error(v: &Value) -> String {
     match &v["error"] {
         Value::String(s) if !s.trim().is_empty() => parts.push(s.trim().to_string()),
         Value::Object(o) => {
-            let msg = o.get("message").and_then(Value::as_str).unwrap_or("").trim();
+            let msg = o
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             let code = o
                 .get("code")
-                .map(|c| c.as_str().map(str::to_string).unwrap_or_else(|| c.to_string()))
+                .map(|c| {
+                    c.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| c.to_string())
+                })
                 .unwrap_or_default();
             match (msg.is_empty(), code.is_empty()) {
                 (false, false) => parts.push(format!("{msg} (code {code})")),
