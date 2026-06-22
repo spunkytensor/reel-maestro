@@ -78,6 +78,8 @@ struct Verdict {
 /// character (a portrait) and location (an establishing still), and each scene is conditioned on
 /// the references for the entities it lists (`cast_ids` / `location_id`) so people and places stay
 /// the same across the reel.
+// Eight loosely-related inputs with one call site; an options struct would add ceremony, not clarity.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate(
     or: &OpenRouter,
     scenes: &[Scene],
