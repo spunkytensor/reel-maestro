@@ -38,10 +38,14 @@ pub async fn generate(
         .map(|i| async move {
             // Veo Lite accepts only 4, 6, or 8s clips; size up to the scene's window.
             let duration = snap_duration(durations[i]);
-            // Seed the motion prompt with the scene's image prompt, then nudge toward gentle,
-            // cinematic movement so clips don't jump around or contradict the still.
+            // Seed the motion prompt with the scene's image prompt (which already carries the
+            // characters' canonical traits), then lock it to the first frame so identities,
+            // wardrobe, and setting don't drift, and nudge toward gentle cinematic movement.
             let prompt = format!(
-                "{}. Subtle natural motion, cinematic, slow gentle camera move.",
+                "Animate this image with subtle, natural motion and a slow, gentle camera move. \
+                 Keep every person's face, hair, build, and clothing and the entire setting \
+                 EXACTLY as in the first frame — do not change identities, wardrobe, props, or \
+                 background, and do not add or remove people. Scene: {}",
                 scenes[i].image_prompt
             );
             // Use the already-generated still as the first frame (image-to-video) so the clip

@@ -13,6 +13,17 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+/// The unified cinematic "house grade" applied to the whole reel: a gentle contrast/saturation
+/// lift, a soft S-curve, a subtle vignette, and light temporal film grain. Ties independently
+/// generated scenes into one look and reads as real footage rather than clean AI stills.
+const GRADE: &str = "eq=contrast=1.04:saturation=1.05,\
+                     curves=master='0/0 0.25/0.23 0.78/0.81 1/1',\
+                     vignette=PI/4,noise=alls=6:allf=t,format=yuv420p";
+
+/// Cap on the per-still exposure correction (in ffmpeg `eq=brightness` units) so the cross-scene
+/// match nudges frames toward a common exposure without flattening intentional dark/bright scenes.
+const EXPOSURE_CAP: f64 = 0.06;
+
 /// Run ffmpeg with the given args; fail loudly with stderr if it errors.
 ///
 /// Every call gets `-y` (overwrite output without prompting — we own the run folder) and
@@ -170,6 +181,16 @@ pub struct RenderReelOptions<'a> {
     pub media: &'a [SceneMedia],
     /// On-screen seconds for each scene (same length/order as `media`).
     pub durations: &'a [f64],
+    /// Per-junction cross-dissolve flags, length `media.len() - 1`: element `j` requests a
+    /// cross-dissolve between scene `j` and `j+1` (only set where both are stills). Empty or all
+    /// `false` ⇒ plain hard cuts (the original `concat` path).
+    pub dissolves: &'a [bool],
+    /// Cross-dissolve length in seconds; clamped per junction so a dissolve never exceeds half of
+    /// either neighbor's on-screen time.
+    pub dissolve_seconds: f64,
+    /// Apply the unified cinematic colour grade + film grain to the whole reel, and match scene
+    /// stills' exposure to each other, so independently-generated frames read as one shoot.
+    pub grade: bool,
     /// Narration audio filename — the timeline the video is cut to.
     pub audio: &'a str,
     /// Optional background soundtrack filename, looped to cover the whole reel.
@@ -187,6 +208,60 @@ pub struct RenderReelOptions<'a> {
     pub output: &'a str,
 }
 
+/// Mean luma (0–255) of an image file, or `None` if it can't be read/decoded.
+fn mean_luma(path: &Path) -> Option<f64> {
+    let img = image::open(path).ok()?.to_luma8();
+    let n = img.as_raw().len();
+    if n == 0 {
+        return None;
+    }
+    let sum: u64 = img.as_raw().iter().map(|&p| p as u64).sum();
+    Some(sum as f64 / n as f64)
+}
+
+/// Mean luma of a clip's first frame, by extracting it to a temp JPEG and measuring it. Lets clips
+/// participate in the cross-scene exposure match alongside stills. `None` if extraction fails.
+fn clip_frame_luma(dir: &Path, name: &str) -> Option<f64> {
+    let tmp = dir.join(".exposure-probe.jpg");
+    let probe = tmp.file_name()?;
+    let out = Command::new("ffmpeg")
+        .current_dir(dir)
+        .args(["-y", "-loglevel", "error", "-i", name, "-frames:v", "1"])
+        .arg(probe)
+        .output()
+        .ok()?;
+    let luma = out.status.success().then(|| mean_luma(&tmp)).flatten();
+    let _ = std::fs::remove_file(&tmp);
+    luma
+}
+
+/// Per-scene exposure correction (in `eq=brightness` units) that nudges each scene toward the
+/// group's median brightness, so independently-generated frames — stills AND clips alike — match
+/// instead of flickering lighter/darker between scenes. Unreadable scenes get 0.0 (no correction);
+/// when fewer than two scenes are measurable there's nothing to match, so all corrections are 0.0.
+fn exposure_deltas(dir: &Path, media: &[SceneMedia]) -> Vec<f64> {
+    let lumas: Vec<Option<f64>> = media
+        .iter()
+        .map(|m| match m {
+            SceneMedia::Still(name) => mean_luma(&dir.join(name)),
+            SceneMedia::Clip(name) => clip_frame_luma(dir, name),
+        })
+        .collect();
+    let mut present: Vec<f64> = lumas.iter().filter_map(|x| *x).collect();
+    if present.len() < 2 {
+        return vec![0.0; media.len()];
+    }
+    present.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let target = present[present.len() / 2]; // median brightness
+    lumas
+        .iter()
+        .map(|x| match x {
+            Some(l) => ((target - l) / 255.0).clamp(-EXPOSURE_CAP, EXPOSURE_CAP),
+            None => 0.0,
+        })
+        .collect()
+}
+
 /// Build the whole reel in a SINGLE ffmpeg pass: each scene (a Ken Burns still or a video
 /// clip) is fit to its window, concatenated, captioned, and muxed with audio — one encode
 /// total (no intermediate clips, no double-encoding).
@@ -199,6 +274,9 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         dir,
         media,
         durations,
+        dissolves,
+        dissolve_seconds,
+        grade,
         audio,
         music,
         duck,
@@ -211,6 +289,31 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
     let n = media.len();
     let mut args: Vec<String> = vec!["-y".into(), "-loglevel".into(), "error".into()];
 
+    // Per-junction cross-dissolve length (0.0 = hard cut). Clamp so a dissolve never exceeds half
+    // of either neighbor's on-screen time, and drop sub-0.1s dissolves back to cuts (too short to
+    // read). Index `j` is the junction between scene `j` and `j+1`.
+    let xfade: Vec<f64> = (0..n.saturating_sub(1))
+        .map(|j| {
+            if dissolves.get(j).copied().unwrap_or(false) {
+                let d = dissolve_seconds
+                    .min(0.5 * durations[j])
+                    .min(0.5 * durations[j + 1]);
+                if d >= 0.1 {
+                    d
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let any_dissolve = xfade.iter().any(|&d| d > 0.0);
+    // Rendered length of scene `i`: its on-screen time plus the dissolve it fades OUT into the next
+    // scene. Extending the outgoing still by exactly the overlap keeps the joined total equal to
+    // sum(durations) (= the audio length), so the crossfade never steals hold time or desyncs.
+    let seg_len = |i: usize| durations[i] + xfade.get(i).copied().unwrap_or(0.0);
+
     // One input per scene: looped still (capped at its duration) or a video clip.
     for (i, m) in media.iter().enumerate() {
         match m {
@@ -220,7 +323,7 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
                         .iter()
                         .map(|s| s.to_string()),
                 );
-                args.push(format!("{:.3}", durations[i]));
+                args.push(format!("{:.3}", seg_len(i)));
                 args.push("-i".into());
                 args.push(img.clone());
             }
@@ -240,9 +343,27 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
     }
 
     // Per-scene video filter, normalized to a 1080x1920 30fps segment of length durations[i].
+    // When dissolving, pin every segment to a single timebase: `xfade` rejects inputs whose
+    // timebases differ, and a `concat` stage upstream of an `xfade` emits a different timebase
+    // than a raw segment, so without this a cut-before-a-dissolve fails to configure.
+    let tb = if any_dissolve { ",settb=AVTB" } else { "" };
+    // Cross-scene exposure match (part of the grade): nudge each still toward the group's median
+    // brightness so independently-generated frames don't flicker lighter/darker between scenes.
+    let exposure = if grade {
+        exposure_deltas(dir, media)
+    } else {
+        vec![0.0; n]
+    };
     let mut parts: Vec<String> = Vec::with_capacity(n + 4);
     for (i, m) in media.iter().enumerate() {
         let dur = durations[i];
+        // Per-scene exposure correction toward the group median (empty when grading is off or the
+        // correction is negligible). Applied to both stills and clips so they don't flicker.
+        let eqx = if grade && exposure[i].abs() > 1e-4 {
+            format!("eq=brightness={:.4},", exposure[i])
+        } else {
+            String::new()
+        };
         match m {
             SceneMedia::Still(_) => {
                 // Ken Burns. d=1 = one output frame per looped input frame, so the zoom
@@ -251,15 +372,21 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
                 // the motion step/shimmer at output. Smooth it two ways: supersample the
                 // still to 4x (a 1px step becomes ~0.25px at output) and run zoompan at 2x
                 // output, then Lanczos-downscale to 1080x1920 (antialiases the remainder).
+                //
+                // Scale the per-frame zoom rate to THIS scene's frame count so the move spans the
+                // whole window (1.0 → 1.12, or the reverse) instead of finishing early and freezing
+                // for the rest of a long scene. (A fixed rate maxes out at a fixed time, ~6.7s.)
+                let frames = (seg_len(i) * 30.0).max(2.0);
+                let rate = 0.12 / (frames - 1.0);
                 let z = if i % 2 == 0 {
-                    "min(1.0+0.0006*on,1.12)"
+                    format!("min(1.0+{rate:.6}*on,1.12)")
                 } else {
-                    "max(1.12-0.0006*on,1.0)"
+                    format!("max(1.12-{rate:.6}*on,1.0)")
                 };
                 parts.push(format!(
                     "[{i}:v]scale=4320:7680:force_original_aspect_ratio=increase:flags=lanczos,crop=4320:7680,\
                      zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=2160x3840:fps=30,\
-                     scale=1080:1920:flags=lanczos,setsar=1,format=yuv420p[v{i}]"
+                     scale=1080:1920:flags=lanczos,setsar=1,{eqx}format=yuv420p{tb}[v{i}]"
                 ));
             }
             SceneMedia::Clip(name) => {
@@ -277,24 +404,63 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
                 parts.push(format!(
                     "[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,\
                      setsar=1,setpts=PTS*{factor:.5},fps=30,tpad=stop_mode=clone:stop_duration=1,\
-                     trim=duration={dur:.3},setpts=PTS-STARTPTS,format=yuv420p[v{i}]"
+                     trim=duration={dur:.3},setpts=PTS-STARTPTS,{eqx}format=yuv420p{tb}[v{i}]"
                 ));
             }
         }
     }
-    let concat_inputs: String = (0..n).map(|i| format!("[v{i}]")).collect();
-    match captions {
-        Some(ass) => {
-            parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=0[cat]"));
-            match fontsdir {
-                Some(fd) => parts.push(format!("[cat]subtitles={ass}:fontsdir={fd}[vout]")),
-                None => parts.push(format!("[cat]subtitles={ass}[vout]")),
+    if !any_dissolve {
+        // No cross-dissolves: the original single-concat path, unchanged.
+        let concat_inputs: String = (0..n).map(|i| format!("[v{i}]")).collect();
+        match captions {
+            Some(ass) => {
+                parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=0[cat]"));
+                match fontsdir {
+                    Some(fd) => parts.push(format!("[cat]subtitles={ass}:fontsdir={fd}[vout]")),
+                    None => parts.push(format!("[cat]subtitles={ass}[vout]")),
+                }
+            }
+            None => {
+                parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=0[vout]"));
             }
         }
-        None => {
-            parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=0[vout]"));
+    } else {
+        // Mixed cuts and cross-dissolves: fold the segments left-to-right, joining each next
+        // segment with either xfade (cross-dissolve) or concat (hard cut). `acc_len` tracks the
+        // accumulator's running length so each xfade `offset` lands at `acc_len - d`.
+        let mut acc = "[v0]".to_string();
+        let mut acc_len = seg_len(0);
+        for i in 1..n {
+            let d = xfade[i - 1];
+            if d > 0.0 {
+                let offset = acc_len - d;
+                parts.push(format!(
+                    "{acc}[v{i}]xfade=transition=fade:duration={d:.3}:offset={offset:.3}[j{i}]"
+                ));
+                acc_len += seg_len(i) - d;
+            } else {
+                parts.push(format!("{acc}[v{i}]concat=n=2:v=1:a=0[j{i}]"));
+                acc_len += seg_len(i);
+            }
+            acc = format!("[j{i}]");
+        }
+        // Burn captions onto the joined video, or pass it through, producing [vout].
+        match captions {
+            Some(ass) => match fontsdir {
+                Some(fd) => parts.push(format!("{acc}subtitles={ass}:fontsdir={fd}[vout]")),
+                None => parts.push(format!("{acc}subtitles={ass}[vout]")),
+            },
+            None => parts.push(format!("{acc}null[vout]")),
         }
     }
+
+    // Optional unified grade + grain + vignette over the whole reel → [vfinal].
+    let video_map = if grade {
+        parts.push(format!("[vout]{GRADE}[vfinal]"));
+        "[vfinal]"
+    } else {
+        "[vout]"
+    };
 
     // Audio: narration alone, or mixed under a soundtrack (ducked or fixed-low).
     let audio_map = if music.is_some() {
@@ -345,7 +511,7 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
             "-filter_complex",
             &filter,
             "-map",
-            "[vout]",
+            video_map,
             "-map",
             &audio_map,
             "-c:v",

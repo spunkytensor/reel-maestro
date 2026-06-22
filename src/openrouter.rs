@@ -99,18 +99,55 @@ impl OpenRouter {
             }
         });
         let v = json_or_err(self.post("/chat/completions").json(&body).send().await?).await?;
-        let content = v["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| anyhow!("no message content in chat response: {v}"))?;
-        serde_json::from_str(content).with_context(|| {
+        let content =
+            message_text(&v).ok_or_else(|| anyhow!("no message content in chat response: {v}"))?;
+        serde_json::from_str(&content).with_context(|| {
             format!("could not parse structured output as expected schema: {content}")
         })
     }
 
-    /// Image generation through the chat-completions `modalities` path. Optional `references`
-    /// are base64 data URLs included as input images so the model can keep their subjects
-    /// consistent (e.g. a recurring character). Returns raw image bytes.
-    pub async fn generate_image(&self, prompt: &str, references: &[String]) -> Result<Vec<u8>> {
+    /// Multimodal structured judgement: send `instruction` plus labeled images to the text model
+    /// (which is multimodal) and parse its JSON reply against `schema` into `T`. Each image is
+    /// preceded by its label, like `image_content`. Used by the consistency QA pass.
+    pub async fn judge_json<T: DeserializeOwned>(
+        &self,
+        system: &str,
+        instruction: &str,
+        images: &[(String, String)],
+        schema_name: &str,
+        schema: Value,
+    ) -> Result<T> {
+        let mut content = vec![json!({ "type": "text", "text": instruction })];
+        for (label, url) in images {
+            content.push(json!({ "type": "text", "text": label }));
+            content.push(json!({ "type": "image_url", "image_url": { "url": url } }));
+        }
+        let body = json!({
+            "model": self.text_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": { "name": schema_name, "strict": true, "schema": schema }
+            }
+        });
+        let v = json_or_err(self.post("/chat/completions").json(&body).send().await?).await?;
+        let reply =
+            message_text(&v).ok_or_else(|| anyhow!("no message content in judge response: {v}"))?;
+        serde_json::from_str(&reply)
+            .with_context(|| format!("could not parse judge output as expected schema: {reply}"))
+    }
+
+    /// Image generation through the chat-completions `modalities` path. Optional `references` are
+    /// `(label, data_url)` pairs included as input images, each preceded by its label so the model
+    /// knows which reference is which subject (person / location / prior frame). Returns raw bytes.
+    pub async fn generate_image(
+        &self,
+        prompt: &str,
+        references: &[(String, String)],
+    ) -> Result<Vec<u8>> {
         let body = json!({
             "model": self.image_model,
             "messages": [{"role": "user", "content": image_content(prompt, references)}],
@@ -281,7 +318,8 @@ impl OpenRouter {
     /// Image-to-video (or text-to-video) via the async video jobs API: submit, poll until
     /// the job completes, then download the MP4. `first_frame` is a base64 data URL used as
     /// the first frame; pass `None` for pure text-to-video. Retries once as text-to-video
-    /// if an image-conditioned submit fails.
+    /// if an image-conditioned submit fails, and retries a *terminally-failed* job once (Veo's
+    /// safety filter is often non-deterministic, so a re-roll frequently succeeds).
     pub async fn generate_video(
         &self,
         prompt: &str,
@@ -289,30 +327,56 @@ impl OpenRouter {
         duration: u32,
         resolution: &str,
     ) -> Result<Vec<u8>> {
-        let polling_url = match self
-            .submit_video(prompt, first_frame, duration, resolution)
-            .await
-        {
-            Ok(url) => url,
-            Err(e) if first_frame.is_some() => {
-                eprintln!("    image-to-video submit failed ({e}); retrying as text-to-video");
-                self.submit_video(prompt, None, duration, resolution)
-                    .await?
-            }
-            Err(e) => return Err(e),
-        };
+        const ATTEMPTS: usize = 2;
+        let mut last_err = String::new();
+        for attempt in 1..=ATTEMPTS {
+            let polling_url = match self
+                .submit_video(prompt, first_frame, duration, resolution)
+                .await
+            {
+                Ok(url) => url,
+                Err(e) if first_frame.is_some() => {
+                    eprintln!("    image-to-video submit failed ({e}); retrying as text-to-video");
+                    self.submit_video(prompt, None, duration, resolution)
+                        .await?
+                }
+                Err(e) => return Err(e),
+            };
 
-        // Poll until done. Jobs take ~30s–several minutes; cap at ~10 minutes.
-        let max_polls = 30;
-        for _ in 0..max_polls {
-            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-            match self.poll_video(&polling_url).await? {
-                VideoStatus::Pending => continue,
-                VideoStatus::Failed(msg) => bail!("video job failed: {msg}"),
-                VideoStatus::Done(content_url) => return self.download_video(&content_url).await,
+            // Poll until done. Jobs take ~30s–several minutes; cap at ~10 minutes.
+            let max_polls = 30;
+            let mut failure: Option<String> = None;
+            for _ in 0..max_polls {
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                match self.poll_video(&polling_url).await? {
+                    VideoStatus::Pending => continue,
+                    VideoStatus::Failed(msg) => {
+                        failure = Some(msg);
+                        break;
+                    }
+                    VideoStatus::Done(content_url) => {
+                        return self.download_video(&content_url).await
+                    }
+                }
+            }
+
+            match failure {
+                // A terminal failure (often a non-deterministic content filter) — re-roll once.
+                Some(msg) => {
+                    last_err = msg;
+                    if attempt < ATTEMPTS {
+                        eprintln!(
+                            "    video job failed ({last_err}); re-rolling once ({}/{ATTEMPTS})",
+                            attempt + 1
+                        );
+                        continue;
+                    }
+                    bail!("video job failed: {last_err}");
+                }
+                None => bail!("video job timed out after {} minutes", max_polls * 20 / 60),
             }
         }
-        bail!("video job timed out after {} minutes", max_polls * 20 / 60)
+        bail!("video job failed: {last_err}")
     }
 
     /// Submit one video job and return the URL to poll for its result. Always requests a
@@ -533,15 +597,36 @@ fn decode_data_url(url: &str) -> Result<Vec<u8>> {
     Ok(base64::engine::general_purpose::STANDARD.decode(&url[comma + 1..])?)
 }
 
-/// Build the chat message `content` for image generation. With no references it's a plain
-/// string (unchanged behaviour); with references it's a multimodal array of a text part plus
-/// one `image_url` part per reference (data URL), which the model conditions on.
-fn image_content(prompt: &str, references: &[String]) -> Value {
+/// Build the chat message `content` for image generation. With no references it's a plain string
+/// (unchanged behaviour); with references it's a multimodal array of the prompt followed by, for
+/// EACH reference, a text label then its image — so the model binds each image to the right
+/// subject (person / location / prior frame) instead of guessing the mapping from order alone.
+/// Extract the assistant message text from a chat-completions response, tolerating providers that
+/// return `content` as a plain string OR as an array of `{type:"text", text:...}` parts (common for
+/// multimodal replies). Returns `None` when there is no text (e.g. a refusal with null content), so
+/// the caller can surface a clear error instead of mis-reading the shape.
+fn message_text(v: &Value) -> Option<String> {
+    let content = &v["choices"][0]["message"]["content"];
+    if let Some(s) = content.as_str() {
+        return (!s.is_empty()).then(|| s.to_string());
+    }
+    if let Some(parts) = content.as_array() {
+        let text: String = parts
+            .iter()
+            .filter_map(|p| p["text"].as_str().or_else(|| p.as_str()))
+            .collect();
+        return (!text.is_empty()).then_some(text);
+    }
+    None
+}
+
+fn image_content(prompt: &str, references: &[(String, String)]) -> Value {
     if references.is_empty() {
         return json!(prompt);
     }
     let mut parts = vec![json!({ "type": "text", "text": prompt })];
-    for url in references {
+    for (label, url) in references {
+        parts.push(json!({ "type": "text", "text": label }));
         parts.push(json!({ "type": "image_url", "image_url": { "url": url } }));
     }
     json!(parts)
@@ -598,12 +683,21 @@ mod tests {
     }
 
     #[test]
-    fn image_content_with_refs_is_multimodal_array() {
-        let c = image_content("a cat", &["data:image/jpeg;base64,AAAA".to_string()]);
+    fn image_content_interleaves_label_then_image() {
+        let c = image_content(
+            "a cat",
+            &[(
+                "PERSON \"jake\"".to_string(),
+                "data:image/jpeg;base64,AAAA".to_string(),
+            )],
+        );
+        // prompt, then the reference's LABEL, then its image — so each image is bound to its subject.
         assert_eq!(c[0]["type"], "text");
         assert_eq!(c[0]["text"], "a cat");
-        assert_eq!(c[1]["type"], "image_url");
-        assert_eq!(c[1]["image_url"]["url"], "data:image/jpeg;base64,AAAA");
+        assert_eq!(c[1]["type"], "text");
+        assert_eq!(c[1]["text"], "PERSON \"jake\"");
+        assert_eq!(c[2]["type"], "image_url");
+        assert_eq!(c[2]["image_url"]["url"], "data:image/jpeg;base64,AAAA");
     }
 
     #[test]

@@ -29,34 +29,50 @@ use crate::model::WordTiming;
 /// timings are also written to `debug_out` (the run's `words.json`) so resumed runs can reuse
 /// them and so the timing is inspectable. Never fails the pipeline for caption reasons — a
 /// whisper problem degrades to estimation rather than erroring out.
+/// Word timings plus a `coverage` score in `[0, 1]`: the fraction of the narration that whisper
+/// actually transcribed (raw whisper tokens ÷ narration words, capped at 1). A low value means the
+/// audio was truncated — far fewer words were spoken than the script has — which the caller uses to
+/// re-synthesize. When whisper is unavailable and timings are estimated, coverage is 1.0 (the
+/// estimate spans the whole audio, so there's no truncation signal to act on).
+pub struct Timings {
+    pub words: Vec<WordTiming>,
+    pub coverage: f64,
+}
+
 pub fn word_timings(
     cfg: &Config,
     audio: &Path,
     narration: &str,
     debug_out: &Path,
-) -> Result<Vec<WordTiming>> {
+) -> Result<Timings> {
+    let narr_words = narration.split_whitespace().count().max(1);
     // 1. Real timings from local whisper-timestamped, re-texted to the narration script so
     //    captions show the correct spelling rather than whisper's ASR guesses.
-    let words = match local_word_timings(&cfg.whisper_cmd, &cfg.whisper_model, audio) {
-        Ok(w) if !w.is_empty() => align_text_to_timings(narration, &w),
+    let (words, coverage) = match local_word_timings(&cfg.whisper_cmd, &cfg.whisper_model, audio) {
+        Ok(w) if !w.is_empty() => {
+            // Raw whisper token count vs narration words = how much of the script was actually
+            // spoken (independent of the per-word alignment that follows).
+            let coverage = (w.len() as f64 / narr_words as f64).min(1.0);
+            (align_text_to_timings(narration, &w), coverage)
+        }
         Ok(_) => {
             eprintln!(
                 "  note: {} produced no word timings; estimating instead",
                 cfg.whisper_cmd
             );
-            estimate_from_audio(audio, narration)?
+            (estimate_from_audio(audio, narration)?, 1.0)
         }
         Err(e) => {
             eprintln!(
                 "  note: local word timing via `{}` unavailable ({e}); estimating instead",
                 cfg.whisper_cmd
             );
-            estimate_from_audio(audio, narration)?
+            (estimate_from_audio(audio, narration)?, 1.0)
         }
     };
 
     std::fs::write(debug_out, serde_json::to_vec_pretty(&words)?)?;
-    Ok(words)
+    Ok(Timings { words, coverage })
 }
 
 fn estimate_from_audio(audio: &Path, narration: &str) -> Result<Vec<WordTiming>> {

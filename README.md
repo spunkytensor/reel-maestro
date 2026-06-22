@@ -205,6 +205,10 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--poster-scene <N>` | `0` | Fallback only: which scene's frame to use if custom poster generation fails (0 = hook). |
 | `--no-embed-poster` | off | Write `poster.jpg` but don't embed it as the MP4's cover art. |
 | `--no-captions` | off | Don't burn captions into the video. |
+| `--no-dissolve` | off | Force hard cuts between every scene (disable cross-dissolves). |
+| `--dissolve-seconds <f64>` | `0.5` | Cross-dissolve length for scriptwriter-flagged still→still transitions. |
+| `--no-grade` | off | Disable the unified cinematic colour grade / film grain + cross-scene exposure match. |
+| `--validate-scene <off\|2\|3>` | `2` | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` (default) / `3` = up to that many candidates at up to N× image cost. |
 | `--no-narration` | off | No spoken voiceover — produce a silent or music-only video. |
 | `--scene-seconds <f64>` | `4.0` | Per-scene length used when `--no-narration` is set (no audio to time against). |
 | `--no-images` | off | Stop right after writing word timings (script + TTS + timing only). Cheap way to test caption timing. |
@@ -335,6 +339,39 @@ reelmaestro --topic "..." --video --video-resolution 1080p --video-model google/
 - We request `generate_audio: false` (you already have narration), which keeps Veo cheaper.
 - Veo is an async job API (submit → poll → download); clips take ~30s–several minutes each,
   generated concurrently. Expect a few minutes of wall-clock for a full `--video` run.
+
+## Transitions
+
+Scene boundaries are hard cuts by default, but the scriptwriter marks soft beats (time passing,
+imagination/dream shifts, staying in one place) for a **cross-dissolve**, emitted per scene as
+`transition` in `script.json`. At render time a dissolve is applied only between two consecutive
+**Ken Burns stills** (any junction touching a video clip stays a hard cut).
+
+- It's **on by default**; pass `--no-dissolve` for hard cuts everywhere, or
+  `--dissolve-seconds <f64>` (default `0.5`) to tune the fade length.
+- Cross-dissolves never change the runtime: the outgoing still is extended by exactly the overlap,
+  so total video length stays equal to the narration (captions/audio remain in sync). Very short
+  scenes auto-fall back to a cut.
+
+## Realism and consistency
+
+Independently generated scene images tend to mismatch (different exposure/white balance) and look
+"AI-clean." Reel Maestro pulls them into one believable shoot:
+
+- **Unified grade (on by default).** The whole reel gets a subtle cinematic grade — gentle
+  contrast/saturation, a soft S-curve, a light vignette, and fine film grain — plus a **cross-scene
+  exposure match** that nudges every still toward the group's median brightness. Disable with
+  `--no-grade`.
+- **House look in prompts.** Every scene/poster prompt carries one consistent photographic style
+  (full-frame 50mm, natural skin texture, soft directional light, shallow depth of field, subtle
+  grain), so frames share a look and avoid the plastic/CGI tell.
+- **Labeled, multi-view references.** Each reference image (per-character portrait — front + a
+  3/4 view — and the location establishing shot) is sent to the image model *labeled inline*, so it
+  binds each image to the right person/place instead of guessing — fewer identity swaps and ghosts.
+- **Scene validation (on by default).** Each scene generates `--validate-scene` candidates (default
+  `2`) and keeps the one a vision model judges most consistent with the references (correct people,
+  wardrobe, setting; no extra/ghost people; single unified frame), re-rolling drifting frames. Set
+  `--validate-scene off` to turn it off, or `3` to try harder — each candidate is an extra image.
 
 ## Testing
 
