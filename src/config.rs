@@ -57,7 +57,7 @@ impl Config {
             image_model: pick(
                 &cli.image_model,
                 "REELMAESTRO_IMAGE_MODEL",
-                "google/gemini-3.1-flash-image",
+                "google/gemini-3-pro-image",
             ),
             tts_model: pick(
                 &cli.tts_model,
