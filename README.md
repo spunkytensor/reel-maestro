@@ -20,23 +20,37 @@ See https://www.youtube.com/@ReelMaestroSamples for examples of reels created wi
 ```mermaid
 flowchart TD
     input["Input<br/>--topic / --brief / --script / --url"] --> script["Script (LLM)"]
-    script --> plan["narration + scene prompts"]
+    script --> plan["narration + scene prompts<br/>+ recurring characters & locations"]
 
     plan --> tts["text-to-speech"] --> audio["audio.mp3"]
     audio --> whisper["whisper-timestamped (local)"] --> words["word timings"] --> caps["captions (.ass)"]
-    plan --> img["image generation (per scene)"] --> stills["1080×1920 stills"]
 
-    audio --> ff["ffmpeg<br/>Ken Burns + concat + burn + mux"]
+    plan --> refs["character portraits +<br/>location establishing shots"]
+    plan --> img["image generation (per scene)"]
+    refs -.->|"condition"| img
+    img --> judge{"scene validation<br/>vision judge"}
+    judge -->|"re-roll if inconsistent"| img
+    judge --> stills["1080×1920 stills"]
+    stills -.->|"--video"| veo["Veo image-to-video"] --> clips["AI video clips"]
+
+    audio --> ff["ffmpeg<br/>Ken Burns / dissolve / grade<br/>+ concat + burn-in + mux"]
     caps --> ff
     stills --> ff
+    clips -.-> ff
     ff --> reel["reel.mp4"]
 ```
 
 Audio is the master clock: captions are timed from real word-level timestamps produced by a
 local [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped) run (with a
-duration-based estimate as a fallback), and each scene image is shown for its proportional
-slice of the narration. OpenRouter's hosted transcription endpoint only returns plain text —
-no timestamps for any model — so word timing is done locally instead.
+duration-based estimate as a fallback), and each scene **cut is snapped to the word being
+spoken** so visuals land on the narration. OpenRouter's hosted transcription endpoint only
+returns plain text — no timestamps for any model — so word timing is done locally instead.
+
+Recurring people, animals, and places are locked across scenes: a **reference portrait** per
+character and an **establishing shot** per location are generated first, then every scene image
+is conditioned on them and checked by a **vision judge** that re-rolls drifting frames (see
+[Realism and consistency](#realism-and-consistency)). Scenes are Ken Burns stills by default;
+`--video` animates them into **Veo** clips.
 
 ## Requirements
 
