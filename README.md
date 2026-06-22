@@ -48,8 +48,8 @@ returns plain text — no timestamps for any model — so word timing is done lo
 
 Recurring people, animals, and places are locked across scenes: a **reference portrait** per
 character and an **establishing shot** per location are generated first, then every scene image
-is conditioned on them and checked by a **vision judge** that re-rolls drifting frames (see
-[Realism and consistency](#realism-and-consistency)). Scenes are Ken Burns stills by default;
+is conditioned on them and checked by a **vision judge** that re-rolls drifting or malformed frames
+(see [Realism and consistency](#realism-and-consistency)). Scenes are Ken Burns stills by default;
 `--video` animates them into **Veo** clips.
 
 ## Requirements
@@ -191,6 +191,10 @@ Output lands in a timestamped folder `out/<YYYYMMDD_HHMMSS>_<title-slug>/` (e.g.
 `out/20260618_092729_the-sheepdog-and-the-duck/`):
 `reel.mp4`, `poster.jpg`, `reel.ass`, `audio.mp3`, `scene-NN.jpg`, `clip-NN.mp4`, `script.json`, `words.json`.
 
+A reel that includes AI **video** clips is written as **`reel-video.mp4`** instead of `reel.mp4`, so a
+still preview and a later video upgrade of the same run can coexist in the folder rather than one
+overwriting the other (see [Preview-then-upgrade](#preview-then-upgrade-workflow)).
+
 `poster.jpg` is a **custom, purpose-built thumbnail** — the scriptwriter designs an enticing
 cover concept (`poster_prompt`) and the image model renders it clean (no captions),
 conditioned on the character reference so it matches the reel's cast. It's also embedded into
@@ -235,7 +239,7 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | Stage | Default model | Env override |
 |---|---|---|
 | Script | `anthropic/claude-sonnet-4-6` | `REELMAESTRO_TEXT_MODEL` |
-| Image | `google/gemini-3.1-flash-image` (Nano Banana 2) | `REELMAESTRO_IMAGE_MODEL` |
+| Image | `google/gemini-3-pro-image` (Gemini 3 Pro Image) | `REELMAESTRO_IMAGE_MODEL` |
 | TTS | `google/gemini-3.1-flash-tts-preview` (voice `Kore`) | `REELMAESTRO_TTS_MODEL` |
 | Word timing | `whisper_timestamped` (**local**, `base` model) | `REELMAESTRO_WHISPER_CMD` / `REELMAESTRO_WHISPER_MODEL` |
 | Music (opt-in) | `google/lyria-3-pro-preview` | `REELMAESTRO_MUSIC_MODEL` |
@@ -247,8 +251,12 @@ Browse current speech models at `https://openrouter.ai/api/v1/models?output_moda
 call — it runs `whisper_timestamped` locally (OpenRouter's transcription endpoint returns
 text only, no timestamps).
 
-A default run is one script call + one TTS call + ~5 image calls (plus a local, free
-whisper-timestamped run) — typically a few cents.
+A default run is one script call + one TTS call + a handful of image calls on
+`google/gemini-3-pro-image` (one per scene, plus character references and the poster, and the
+default `--validate-scene 2` may generate a second candidate per scene), plus a local, free
+whisper-timestamped run — typically around 10–20 cents. For cheaper drafts, set
+`--image-model google/gemini-3.1-flash-image` (about half the cost, lower coherence); see the
+image-model options and cost table in `.env.example`.
 
 ## Soundtrack (optional)
 
@@ -286,7 +294,7 @@ since each clip is seeded from its still).
 
 How it works: the scriptwriter emits a `cast` description (saved in `script.json`). If it's
 non-empty, Reel Maestro generates one **character reference portrait** (`character-ref.jpg`),
-then conditions every scene image on it — Nano Banana preserves the subject's identity while
+then conditions every scene image on it — the image model preserves the subject's identity while
 changing the setting. This is **automatic**; no flag needed.
 
 ```bash
@@ -304,7 +312,7 @@ reelmaestro --topic "..." --no-consistency
   the faster independent path — nothing to configure.
 - Cost is negligible: one extra portrait image (~$0.004) plus a small reference input per
   scene. If the portrait fails, it falls back to independent generation (non-fatal).
-- Requires an image model that accepts image input (the default `google/gemini-3.1-flash-image`
+- Requires an image model that accepts image input (the default `google/gemini-3-pro-image`
   does).
 
 ## Preview-then-upgrade workflow
@@ -323,10 +331,11 @@ reelmaestro --from out/20260618_141530_a-fox-and-a-hare-become-friends/ --video
 ```
 
 `--from <dir>` reuses the folder's `script.json`, `audio.mp3`, `words.json`, `scene-NN.jpg`,
-and any soundtrack, so the video matches the preview you approved. It re-renders `reel.mp4`
-in place. You can also use it to just re-stitch (e.g. after tweaking a scene image by hand),
-or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no `--video` does a
-pure local re-assemble (no API calls).
+and any soundtrack, so the video matches the preview you approved. A still re-render (no `--video`)
+writes `reel.mp4`; the **video upgrade writes `reel-video.mp4`**, leaving the still `reel.mp4` intact
+so you keep both versions. You can also use `--from` to just re-stitch (e.g. after tweaking a scene
+image by hand), or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no `--video`
+does a pure local re-assemble (no API calls).
 
 ## Video scenes (optional, costs real money)
 
@@ -350,6 +359,11 @@ reelmaestro --topic "..." --video --video-resolution 1080p --video-model google/
   `→ generating 2 video scene(s) (google/veo-3.1-lite, ~12s ≈ $0.60) ...`.
 - Generation is **non-fatal per scene**: if a clip fails (or the job times out), that scene
   falls back to its Ken Burns still — one bad/expensive clip never kills the run.
+- **Clips are reused, so you can regenerate just one scene.** A scene's clip is saved as
+  `scene-NN.mp4`; on a re-run, any clip already on disk is reused (not re-billed). So if you like
+  the video except for one scene, **delete that `scene-NN.mp4` and re-run `--from … --video`** —
+  only the missing clip regenerates and everything else is re-assembled as-is. The cost estimate
+  reflects only the scenes actually being generated (e.g. `generating 1 video scene(s), reusing 5`).
 - We request `generate_audio: false` (you already have narration), which keeps Veo cheaper.
 - Veo is an async job API (submit → poll → download); clips take ~30s–several minutes each,
   generated concurrently. Expect a few minutes of wall-clock for a full `--video` run.
@@ -384,8 +398,9 @@ Independently generated scene images tend to mismatch (different exposure/white 
   binds each image to the right person/place instead of guessing — fewer identity swaps and ghosts.
 - **Scene validation (on by default).** Each scene generates `--validate-scene` candidates (default
   `2`) and keeps the one a vision model judges most consistent with the references (correct people,
-  wardrobe, setting; no extra/ghost people; single unified frame), re-rolling drifting frames. Set
-  `--validate-scene off` to turn it off, or `3` to try harder — each candidate is an extra image.
+  wardrobe, setting; no extra/ghost/malformed subjects; coherent structures; single unified frame),
+  re-rolling drifting frames. Set `--validate-scene off` to turn it off, or `3` to try harder — each
+  candidate is an extra image generation.
 
 ## Testing
 
@@ -477,7 +492,7 @@ flowchart TD
     charImg --> charRef["character-ref.jpg"]
 
     %% Per-scene images
-    scenePrompts --> sceneImg["🎨 Image model · per scene<br/>Nano Banana"]
+    scenePrompts --> sceneImg["🎨 Image model · per scene<br/>Gemini 3 Pro Image"]
     charRef -.->|conditions| sceneImg
     sceneImg --> stills["scene-NN.jpg"]
 
@@ -518,9 +533,9 @@ flowchart TD
 | Invocation | Model (default) | Produces | Used for |
 |---|---|---|---|
 | Text LLM | `anthropic/claude-sonnet-4-6` | narration, scene prompts, `poster_prompt`, `music_prompt`, `cast` | drives every downstream call |
-| Image · portrait | `google/gemini-3.1-flash-image` | `character-ref.jpg` | conditions scene + poster images |
-| Image · per scene | `google/gemini-3.1-flash-image` | `scene-NN.jpg` | Ken Burns stills / Veo first frames |
-| Image · poster | `google/gemini-3.1-flash-image` | `poster.jpg` | embedded MP4 cover art |
+| Image · portrait | `google/gemini-3-pro-image` | `character-ref.jpg` | conditions scene + poster images |
+| Image · per scene | `google/gemini-3-pro-image` | `scene-NN.jpg` | Ken Burns stills / Veo first frames |
+| Image · poster | `google/gemini-3-pro-image` | `poster.jpg` | embedded MP4 cover art |
 | TTS | `google/gemini-3.1-flash-tts-preview` | `audio.mp3` | narration + master clock |
 | Word timing *(local)* | `whisper_timestamped` | `words.json` | caption timing → `.ass` |
 | Music *(opt-in)* | `google/lyria-3-pro-preview` | `music.wav` | background soundtrack |

@@ -36,6 +36,15 @@ pub async fn generate(
     // carry the index through to re-sort into scene order afterward.
     let made: Vec<(usize, Option<PathBuf>)> = stream::iter(jobs)
         .map(|i| async move {
+            // Reuse a clip already on disk instead of paying to regenerate it. This is what makes
+            // selective regeneration work: delete just the scene-NN.mp4 you dislike, re-run with
+            // --video, and only that one is regenerated (the rest are reused as-is). Mirrors how
+            // scene stills are reused on --from resume.
+            let path = dir.join(format!("scene-{i:02}.mp4"));
+            if path.exists() {
+                println!("  scene {i}: reusing existing clip");
+                return (i, Some(path));
+            }
             // Veo Lite accepts only 4, 6, or 8s clips; size up to the scene's window.
             let duration = snap_duration(durations[i]);
             // Seed the motion prompt with the scene's image prompt (which already carries the
@@ -45,7 +54,9 @@ pub async fn generate(
                 "Animate this image with subtle, natural motion and a slow, gentle camera move. \
                  Keep every person's face, hair, build, and clothing and the entire setting \
                  EXACTLY as in the first frame — do not change identities, wardrobe, props, or \
-                 background, and do not add or remove people. Scene: {}",
+                 background, and do not add or remove people. Do NOT add any text, words, letters, \
+                 captions, subtitles, watermarks, logos, or timestamps anywhere in the frame — keep \
+                 the footage completely clean of overlaid graphics. Scene: {}",
                 scenes[i].image_prompt
             );
             // Use the already-generated still as the first frame (image-to-video) so the clip
@@ -59,7 +70,6 @@ pub async fn generate(
                 .await
             {
                 Ok(bytes) => {
-                    let path = dir.join(format!("scene-{i:02}.mp4"));
                     match std::fs::write(&path, &bytes) {
                         Ok(()) => (i, Some(path)),
                         Err(e) => {
@@ -86,11 +96,12 @@ pub async fn generate(
     out
 }
 
-/// Total Veo seconds that will be billed for `video_count` scenes (for a cost estimate).
-pub fn billed_seconds(durations: &[f64], video_count: usize) -> u32 {
-    durations
+/// Veo seconds billed for a specific set of scene indices — those actually being generated after
+/// existing clips are reused — so the cost estimate reflects only what will really be billed.
+pub fn billed_seconds_for(durations: &[f64], indices: &[usize]) -> u32 {
+    indices
         .iter()
-        .take(video_count)
+        .filter_map(|&i| durations.get(i))
         .map(|&d| snap_duration(d))
         .sum()
 }

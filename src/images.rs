@@ -27,6 +27,8 @@ const W: u32 = 1080; // final canvas width  (9:16 vertical)
 const H: u32 = 1920; // final canvas height (9:16 vertical)
 const MAX_CONCURRENT: usize = 4; // in-flight image generations — caps load on the API/our memory
 const MAX_ATTEMPTS: usize = 3; // per-image retries before falling back to a placeholder
+const MIN_ACCEPTABLE_SCORE: i64 = 60; // QA floor: below this, spend extra re-rolls trying to clear it
+const MAX_VALIDATE_ATTEMPTS: usize = 4; // hard cap on candidates/scene when chasing the QA floor
 
 /// A consistent photographic "house look" appended to every SCENE and poster prompt so the whole
 /// reel reads as one real shoot rather than a set of independent AI stills. Kept OFF the reference
@@ -235,14 +237,22 @@ async fn render_scene(
     references.extend(chained.iter().cloned());
 
     let label = format!("scene {i}");
-    // Per-scene validation: when `validate >= 1` a vision judge scores each candidate and we keep
-    // the most consistent, re-rolling up to `validate` candidates and stopping early on a
-    // fully-consistent one. `validate == 0` skips the judge (one candidate). A scene with no
+    // Per-scene validation: when `validate` is on, a vision judge scores each candidate and we keep
+    // the most consistent, re-rolling up to `nominal` candidates and stopping early on a
+    // fully-consistent one. If the best so far is still below the quality floor (a malformed or
+    // badly-drifting frame), we spend a few EXTRA re-rolls (up to MAX_VALIDATE_ATTEMPTS) trying to
+    // clear it before settling. `validate == 0` skips the judge (one candidate). A scene with no
     // references has nothing to compare against, so validation is a no-op there regardless.
     let validate = ctx.validate >= 1 && !references.is_empty();
-    let attempts = ctx.validate.max(1);
+    let nominal = ctx.validate.max(1);
+    let max_attempts = if validate {
+        nominal.max(MAX_VALIDATE_ATTEMPTS)
+    } else {
+        1
+    };
     let mut best: Option<(RgbImage, i64)> = None;
-    for attempt in 1..=attempts {
+    let mut rerolled = false;
+    for attempt in 1..=max_attempts {
         let Some(img) = generate_one(
             ctx.or,
             &scene.image_prompt,
@@ -273,12 +283,29 @@ async fn render_scene(
                 if best.as_ref().map(|(_, s)| v.score > *s).unwrap_or(true) {
                     best = Some((img, v.score));
                 }
-                if v.consistent || attempt == attempts {
-                    break; // good enough, or out of re-rolls
+                let best_score = best.as_ref().map(|(_, s)| *s).unwrap_or(0);
+                if v.consistent {
+                    break; // clean — stop spending
                 }
+                if attempt >= max_attempts {
+                    break; // out of re-roll budget
+                }
+                if attempt >= nominal && best_score >= MIN_ACCEPTABLE_SCORE {
+                    break; // spent the normal budget and the best is at least acceptable
+                }
+                // Otherwise re-roll: still within the normal budget, or below the floor with budget
+                // left. Below the floor past `nominal`, we're spending extra tries chasing a clean one.
+                rerolled = true;
+                let below_floor = best_score < MIN_ACCEPTABLE_SCORE;
+                let ceiling = if below_floor { max_attempts } else { nominal };
+                let why = if attempt >= nominal && below_floor {
+                    ", below quality floor"
+                } else {
+                    ""
+                };
                 eprintln!(
-                    "  {label}: QA score {} ({}); re-roll {}/{}",
-                    v.score, v.issues, attempt, attempts
+                    "  {label}: QA score {} ({}){}; re-roll {}/{}",
+                    v.score, v.issues, why, attempt, ceiling
                 );
             }
             None => {
@@ -292,10 +319,26 @@ async fn render_scene(
         }
     }
 
-    let img = best.map(|(im, _)| im).unwrap_or_else(|| {
-        eprintln!("  {label}: image generation failed after retries; using placeholder");
-        placeholder(i)
-    });
+    let (img, kept_score) = match best {
+        Some((im, s)) => (im, Some(s)),
+        None => {
+            eprintln!("  {label}: image generation failed after retries; using placeholder");
+            (placeholder(i), None)
+        }
+    };
+    // Surface the score we settled on (so a re-roll's outcome is visible), and warn loudly when even
+    // the best candidate is below the quality floor — that frame may still carry a defect.
+    if validate {
+        if let Some(s) = kept_score {
+            if s < MIN_ACCEPTABLE_SCORE {
+                eprintln!(
+                    "  {label}: kept QA score {s} (below quality floor {MIN_ACCEPTABLE_SCORE} after {max_attempts} tries; may still have a defect)"
+                );
+            } else if rerolled {
+                eprintln!("  {label}: kept QA score {s}");
+            }
+        }
+    }
     if let Err(e) = img.save(&path) {
         eprintln!("  {label}: saving image failed ({e}); writing placeholder");
         let _ = placeholder(i).save(&path);
@@ -344,10 +387,34 @@ async fn judge_scene(
          their reference, with none missing and no EXTRA featured/foreground person, and no ghosted, \
          faded, translucent, duplicated, merged, or cloned figures. Natural ambient BACKGROUND people \
          (other diners, pedestrians, a passing crowd) in a public setting are EXPECTED and are NOT a \
-         violation — do not flag them; (d) it is a single unified photo (no split-screen/collage). \
-         Judge ONLY what is visible: if a reference detail is out of frame, cropped, occluded, or too \
-         dark/small to make out (e.g. shoes hidden under a table), treat it as not-shown and do NOT \
-         penalize it — flag a detail only when it is clearly visible AND contradicts the reference. ",
+         violation — do not flag them; (d) it is a single unified photo (no split-screen/collage); \
+         (e) the image is anatomically AND structurally sound — a HARD failure when it is not (set \
+         consistent=false and a LOW score, below 50, even if identity, wardrobe, and setting \
+         otherwise match): (i) the focal subject (person or animal) has intact, correct anatomy \
+         (exactly one head with a normal face, the right number and form of eyes, limbs, hands, and \
+         fingers, properly attached), with NO missing, extra, duplicated, fused, melted, distorted, \
+         or garbled body parts (a headless or two-headed figure, a warped face, mangled hands); AND \
+         (ii) the built structures and key objects in the scene (a bridge, path, stairs, building, \
+         road, fence, furniture, vehicle) are physically coherent and plausible — connected, \
+         self-supporting, and continuous, with NO floating, disjointed, broken, melted, warped, or \
+         impossible geometry (e.g. a bridge or path that does not connect end to end, a slab \
+         hovering with nothing under it, stairs leading nowhere, a structure that could not stand); \
+         AND (iii) every subject is physically GROUNDED and supported by the surface it is on — its \
+         feet/legs/body rest ON the ground, floor, or structure with correct contact and scale, NOT \
+         floating, hovering, sunk into the surface, or perched off the EDGE of a surface with its \
+         body or legs hanging unsupported in the air (e.g. an animal standing half off the side of a \
+         narrow bridge). \
+         Judge the structure's and subjects' OWN physical plausibility here, separately from whether \
+         it matches the reference. \
+         Judge ONLY what is visible: if a reference DETAIL is out of frame, cropped, occluded, or too \
+         dark/small to make out (e.g. shoes hidden under a table, an earring, a hem), treat it as \
+         not-shown and do NOT penalize it — flag a detail only when it is clearly visible AND \
+         contradicts the reference. EXCEPTION: this not-shown leniency covers minor details only, NOT \
+         a featured person's head. Every LISTED person is a focal subject and MUST have their head \
+         within the frame: if a listed person's head or face is cut off by the frame edge (or \
+         otherwise absent), that is a HARD failure (a headless/faceless featured character is a \
+         broken composition and makes identity impossible to verify) — set consistent=false and a \
+         LOW score (below 50), even though it is technically out of frame. ",
     );
     if !people.is_empty() {
         instruction.push_str("People who must appear: ");

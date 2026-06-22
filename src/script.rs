@@ -27,11 +27,22 @@ hyphens inside hyphenated words are fine.\n\
 non-overlapping substring chunk of the narration so the chunks concatenated equal the narration.\n\
 - For each scene write a vivid `image_prompt` for a photographic still: concrete subject, \
 vertical 9:16 framing, subject in the upper-middle two-thirds leaving room for captions at the bottom, \
-cinematic documentary lighting. No text or words in the image.\n\
-- Each `image_prompt` MUST describe a SINGLE, unified photographic frame. NEVER request a \
-split-screen, diptych, side-by-side, before/after, collage, triptych, or multi-panel image. To \
-contrast two ideas (e.g. imagination vs reality), use TWO SEPARATE scenes, one per idea, never one \
-split frame.\n\
+cinematic documentary lighting. No text or words in the image. Every featured person MUST have their \
+whole head and face within the frame — when people of different heights share a shot (e.g. an adult \
+and a child), pull the camera back or frame to fit ALL their heads; never crop a featured person's \
+head off at the top edge.\n\
+- Each `image_prompt` MUST describe a SINGLE, unified photographic frame of REAL, SOLID subjects. \
+NEVER request a split-screen, diptych, side-by-side, before/after, collage, triptych, or multi-panel \
+image, and NEVER describe a ghostly, translucent, see-through, faded, overlaid, superimposed, \
+duplicated, cloned, or doppelganger figure (e.g. an \"imagined\" or \"dream\" or \"perfect\" version \
+of someone standing in the same frame as their real self) — those render as broken ghost/duplicate \
+people. To contrast two ideas (e.g. imagination vs reality), use TWO SEPARATE scenes, one per idea, \
+never a split frame and never two versions of the same person in one frame.\n\
+- Keep each `image_prompt`'s camera viewpoint CONSISTENT with the details it asks to show: do not \
+request a feature the chosen angle cannot see. If the shot is from BEHIND or the subject is walking \
+AWAY, do not also describe front-only details (the face, eyes, or an item on the front/chest); if a \
+front detail matters, put the camera in front. Contradictory viewpoints make the image model produce \
+malformed, headless, or two-faced subjects.\n\
 - Write a `music_prompt`: a short instrumental soundtrack description matching the mood — genre, \
 tempo/BPM, key instruments, energy. Always instrumental, explicitly NO vocals (it plays under narration).\n\
 - Write a `characters` list: one entry per person/animal that RECURS across two or more scenes. Give \
@@ -44,7 +55,15 @@ buttoned at the wrist\" OR \"long sleeves rolled to the elbow\" OR \"short sleev
 the same for any other adjustable garment detail (collar open/buttoned, jacket on/off). Example: \"woman \
 ~27, sleek black hair worn DOWN to the shoulders, warm tan complexion, sage-green wrap dress with \
 three-quarter sleeves\" or \"man ~29, navy button-up shirt with long sleeves rolled to the elbow, slim \
-dark-grey chinos\". If nothing specific recurs (abstract topic, landscapes, crowds), use an empty \
+dark-grey chinos\". The description fixes only STABLE identity and wardrobe — NEVER bake in \
+transient state: no pose, no body or hand/arm/leg position, nothing the person is holding or doing, \
+no gaze direction, and no facial expression (do NOT write things like \"one bare hand at her side, \
+the other in her pocket\" or \"smiling\"). Those change every scene and belong in that scene's \
+`image_prompt`; pinning them in the description makes every other scene read as \"wrong\". For an \
+animal (or any subject) easily confused with a larger or different LOOKALIKE, pin the distinction \
+with an explicit negative AND its size, e.g. \"a SMALL Shetland Sheepdog (Sheltie), compact build, \
+NOT a larger Rough Collie / Lassie-type\" — the image model otherwise drifts toward the more common \
+lookalike. If nothing specific recurs (abstract topic, landscapes, crowds), use an empty \
 list. One-off people who appear in a single scene do NOT go here.\n\
 - Write a `locations` list: one entry per place that RECURS across scenes (e.g. the restaurant). Give \
 each a short stable `id` and a FULLY-SPECIFIED `description` fixing ONLY the FIXED setting: decor, \
@@ -63,6 +82,12 @@ in, or \"\" if none. When a scene includes a character, write that character's c
 its `image_prompt` VERBATIM (do not paraphrase or change any detail). Other, non-recurring people in a \
 scene are DIFFERENT individuals: give them their own distinct appearance in the `image_prompt`, clearly \
 different from any recurring character, and never describe them as looking like one.\n\
+- A recurring location's distinctive STRUCTURE (a specific bridge, building, or landmark) must only \
+appear in scenes set in THAT location. If such a structure is visible in a scene, set that scene's \
+`location_id` to the location that contains it (so it stays anchored to its reference and renders the \
+same) — never show another recurring location's structure as unanchored BACKGROUND in a scene set \
+elsewhere, or it will be reinvented differently. For a \"leaving X\" beat, either keep `location_id` = \
+X, or frame the shot so X's structure is out of view and do not mention it in the `image_prompt`.\n\
 - Keep recurring characters' presence CONTINUOUS within a location: once two characters are together \
 in a setting (e.g. seated at the same table), include BOTH in `cast_ids` for EVERY scene set in that \
 location. Do not drop a character in one beat and reintroduce them the next, and do not have someone \
@@ -209,6 +234,25 @@ fn finalize(mut script: Script) -> Script {
     for scene in &mut script.scenes {
         scene.line = remove_dashes(&scene.line);
     }
+    // Drop phantom scenes: the model sometimes appends an extra scene with an empty `line` AND empty
+    // `image_prompt`. It covers no narration (so it gets ~no time window) and, having no subject or
+    // references, makes the image model hallucinate an unrelated frame that ALSO skips validation
+    // (no references to judge against). Remove any such scene — but never empty the list outright
+    // (all-blank output is a catastrophic model failure better surfaced downstream than masked).
+    let before = script.scenes.len();
+    let kept: Vec<Scene> = script
+        .scenes
+        .iter()
+        .filter(|s| !(s.line.trim().is_empty() && s.image_prompt.trim().is_empty()))
+        .cloned()
+        .collect();
+    if !kept.is_empty() && kept.len() < before {
+        eprintln!(
+            "  note: dropped {} empty scene(s) the scriptwriter appended",
+            before - kept.len()
+        );
+        script.scenes = kept;
+    }
     // Fold any legacy single-cast string into `characters` (no-op for fresh multi-character runs).
     script.normalize_entities();
     script
@@ -303,6 +347,40 @@ mod tests {
         assert_eq!(script.characters.len(), 1);
         assert_eq!(script.characters[0].id, "main");
         assert_eq!(script.characters[0].description, "a woman ~30");
+    }
+
+    #[test]
+    fn finalize_drops_phantom_scenes() {
+        // A scene with an empty `line` AND empty `image_prompt` is a phantom the model sometimes
+        // appends; it covers no narration and renders an unrelated frame, so it must be dropped.
+        let script: Script = serde_json::from_str(
+            r#"{"title":"t","narration":"hello world","music_prompt":"m","scenes":[
+                {"line":"hello world","image_prompt":"a vivid frame"},
+                {"line":"","image_prompt":""}
+            ]}"#,
+        )
+        .unwrap();
+        let out = super::finalize(script);
+        assert_eq!(out.scenes.len(), 1, "phantom scene should be dropped");
+        assert_eq!(out.scenes[0].line, "hello world");
+
+        // A scene with content in EITHER field is kept (don't drop real scenes).
+        let keep: Script = serde_json::from_str(
+            r#"{"title":"t","narration":"n","music_prompt":"m","scenes":[{"line":"","image_prompt":"a city skyline"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(super::finalize(keep).scenes.len(), 1);
+
+        // Never empty the list, even if every scene is blank (catastrophic output, surfaced later).
+        let all_blank: Script = serde_json::from_str(
+            r#"{"title":"t","narration":"","music_prompt":"m","scenes":[{"line":"","image_prompt":""}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::finalize(all_blank).scenes.len(),
+            1,
+            "must not empty the scene list"
+        );
     }
 
     #[test]

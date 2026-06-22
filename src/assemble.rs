@@ -123,7 +123,14 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     // when present and otherwise let libass fall back to the system font provider.
     let fontsdir = Path::new(FONTS_DIR).exists().then_some(FONTS_DIR);
 
-    let output = "reel.mp4";
+    // Name a video-upgraded reel separately so a still preview (`reel.mp4`) and a later video
+    // upgrade (`reel-video.mp4`) can coexist in the same run folder instead of overwriting.
+    let has_video = clips.iter().any(|c| c.is_some());
+    let output = if has_video {
+        "reel-video.mp4"
+    } else {
+        "reel.mp4"
+    };
     ffmpeg::render_reel(ffmpeg::RenderReelOptions {
         dir,
         media: &media,
@@ -239,8 +246,22 @@ fn scene_windows(scenes: &[Scene], words: &[WordTiming], total: f64) -> Vec<(f64
 /// scene with `transition == "dissolve"`, and BOTH neighbors are Ken Burns stills (a junction
 /// touching a video clip always hard-cuts). Returns a vector of length `scenes.len() - 1`.
 fn dissolve_plan(scenes: &[Scene], media: &[ffmpeg::SceneMedia], enabled: bool) -> Vec<bool> {
+    let no_dissolves = vec![false; scenes.len().saturating_sub(1)];
     if !enabled || scenes.len() < 2 {
-        return vec![false; scenes.len().saturating_sub(1)];
+        return no_dissolves;
+    }
+    // Cross-dissolves are a stills-only (Ken Burns) effect implemented with xfade, which requires
+    // constant-frame-rate inputs. In the left-fold join a dissolve's left input is the whole reel
+    // accumulated so far, so ANY earlier video clip poisons it: clips are variable-frame-rate, and
+    // xfade aborts the render with "the inputs needs to be a constant frame rate; current rate of
+    // 1/0 is invalid". This bites even when both immediate neighbours are stills — e.g. two adjacent
+    // scenes whose Veo clips were content-filtered and fell back to stills, sitting after other
+    // clips. So if the reel contains ANY clip, use hard cuts everywhere (video reels cut, not fade).
+    if media
+        .iter()
+        .any(|m| matches!(m, ffmpeg::SceneMedia::Clip(_)))
+    {
+        return no_dissolves;
     }
     (0..scenes.len() - 1)
         .map(|j| {
@@ -347,11 +368,13 @@ mod tests {
             vec![true, true, false]
         );
 
-        // A clip at index 2 forces both junctions touching it (1 and 2) to hard cuts.
+        // ANY clip in the reel → hard cuts everywhere: xfade can't take the variable-frame-rate
+        // accumulator a clip leaves behind (this also covers a clip that fell back to a still
+        // mid-reel after content filtering). Even the still-still junction 0 becomes a cut.
         let with_clip = vec![still("a"), still("b"), clip("c"), still("d")];
         assert_eq!(
             dissolve_plan(&scenes, &with_clip, true),
-            vec![true, false, false]
+            vec![false, false, false]
         );
 
         // Disabled → all cuts regardless of flags.

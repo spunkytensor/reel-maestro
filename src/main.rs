@@ -422,12 +422,30 @@ async fn run(cli: &Cli) -> Result<()> {
         None => 0,
     };
     let clips = if video_count > 0 {
-        let secs = video::billed_seconds(&durations, video_count);
-        println!(
-            "→ generating {video_count} video scene(s) ({}, ~{secs}s ≈ ${:.2}) ...",
-            or.video_model,
-            secs as f64 * 0.05
-        );
+        // Only scenes whose clip is missing get (re)generated and billed; existing scene-NN.mp4
+        // clips are reused (delete one to regenerate just that scene). Estimate the real cost.
+        let to_make: Vec<usize> = (0..video_count)
+            .filter(|&i| !dir.join(format!("scene-{i:02}.mp4")).exists())
+            .collect();
+        if to_make.is_empty() {
+            println!(
+                "→ reusing {video_count} existing video clip(s) (delete a scene-NN.mp4 to regenerate it)"
+            );
+        } else {
+            let secs = video::billed_seconds_for(&durations, &to_make);
+            let reused = video_count - to_make.len();
+            let reuse_note = if reused > 0 {
+                format!(", reusing {reused}")
+            } else {
+                String::new()
+            };
+            println!(
+                "→ generating {} video scene(s){reuse_note} ({}, ~{secs}s ≈ ${:.2}) ...",
+                to_make.len(),
+                or.video_model,
+                secs as f64 * 0.05
+            );
+        }
         video::generate(
             &or,
             &script.scenes,
@@ -493,7 +511,12 @@ async fn run(cli: &Cli) -> Result<()> {
     }
     if poster.exists() {
         if !cli.no_embed_poster {
-            if let Err(e) = ffmpeg::embed_poster(&dir, "reel.mp4", "poster.jpg") {
+            // Embed into whichever reel was just built (reel.mp4 or the video upgrade reel-video.mp4).
+            let reel_name = reel
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("reel.mp4");
+            if let Err(e) = ffmpeg::embed_poster(&dir, reel_name, "poster.jpg") {
                 eprintln!("  note: embedding poster as cover art failed ({e})");
             }
         }

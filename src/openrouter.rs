@@ -361,10 +361,13 @@ impl OpenRouter {
             }
 
             match failure {
-                // A terminal failure (often a non-deterministic content filter) — re-roll once.
                 Some(msg) => {
                     last_err = msg;
-                    if attempt < ATTEMPTS {
+                    // Only re-roll a generic, possibly non-deterministic content filter. A
+                    // DETERMINISTIC block (e.g. the input frame contains a person/face Veo refuses
+                    // to animate) will fail identically on re-submit, so a second attempt just wastes
+                    // time and cost — fail fast instead.
+                    if attempt < ATTEMPTS && !is_deterministic_block(&last_err) {
                         eprintln!(
                             "    video job failed ({last_err}); re-rolling once ({}/{ATTEMPTS})",
                             attempt + 1
@@ -476,6 +479,19 @@ enum VideoStatus {
 /// `error` string, sometimes a `{code, message}` object, and on safety blocks a separate set of
 /// RAI media-filter fields. We pull whatever is present (so a content-filter reason isn't reduced
 /// to "unknown error") and fall back to a compact raw dump when nothing structured is found.
+/// Whether a video-job failure message is a DETERMINISTIC block (a safety/policy rejection of the
+/// input, like a person/face the model refuses to animate) that will fail identically on re-submit,
+/// versus a generic, possibly non-deterministic content filter worth one re-roll. Matched on the
+/// human-readable reason from `describe_video_error`.
+fn is_deterministic_block(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("safety setting")
+        || m.contains("person/face")
+        || m.contains("support code")
+        || m.contains("input image contains content")
+        || (m.contains("blocked") && m.contains("input"))
+}
+
 fn describe_video_error(v: &Value) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -640,6 +656,21 @@ mod tests {
     fn image_content_no_refs_is_plain_string() {
         let c = image_content("a cat", &[]);
         assert_eq!(c, json!("a cat"));
+    }
+
+    #[test]
+    fn deterministic_blocks_are_not_retried() {
+        // Safety/input rejections (fail identically on re-submit) → no re-roll.
+        assert!(is_deterministic_block(
+            "The input image contains content that has been blocked by your current safety settings \
+             for person/face generation. Support codes: 17301594"
+        ));
+        assert!(is_deterministic_block("blocked by your safety settings"));
+        // A generic, possibly non-deterministic filter → still worth one re-roll.
+        assert!(!is_deterministic_block(
+            "Video generation completed with no output (content may have been filtered)"
+        ));
+        assert!(!is_deterministic_block("video job timed out"));
     }
 
     #[test]
