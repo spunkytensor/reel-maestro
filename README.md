@@ -6,9 +6,11 @@
   <img src="logo.jpg" alt="Reel Maestro logo" width="240">
 </p>
 
-Reel Maestro is a small, single-binary Rust CLI that turns an idea into a vertical (9:16)
-TikTok/Reels/Shorts-style video with **AI-generated narration audio, images, and burned-in
-captions** — all through a single **OpenRouter API key**. No Docker, no server, no dashboard.
+Reel Maestro is a small, single-binary Rust CLI that turns an idea into a video with
+**AI-generated narration audio, images, and burned-in captions** — all through a single
+**OpenRouter API key**. It makes both vertical (9:16) TikTok/Reels/Shorts reels and, with
+`--format youtube`, landscape (16:9) long-form YouTube videos with a chaptered script and
+pastable metadata. No Docker, no server, no dashboard.
 
 This project is open source under the [Apache License 2.0](LICENSE). Contributions are
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
@@ -51,6 +53,10 @@ character and an **establishing shot** per location are generated first, then ev
 is conditioned on them and checked by a **vision judge** that re-rolls drifting or malformed frames
 (see [Realism and consistency](#realism-and-consistency)). Scenes are Ken Burns stills by default;
 `--video` animates them into **Veo** clips.
+
+The same pipeline also produces landscape long-form videos with `--format youtube`: the script is
+planned as chapters, each chapter renders to its own segment, and the segments are
+stream-concatenated into one video (see [Long-form YouTube mode](#long-form-youtube-mode)).
 
 ## Requirements
 
@@ -189,7 +195,10 @@ verbatim as the narration. (You can also do the brief inline with `--topic "$(ca
 
 Output lands in a timestamped folder `out/<YYYYMMDD_HHMMSS>_<title-slug>/` (e.g.
 `out/20260618_092729_the-sheepdog-and-the-duck/`):
-`reel.mp4`, `poster.jpg`, `reel.ass`, `audio.mp3`, `scene-NN.jpg`, `clip-NN.mp4`, `script.json`, `words.json`.
+`reel.mp4`, `poster.jpg`, `reel.ass`, `audio.mp3`, `scene-NN.jpg`, `scene-NN.mp4` (video clips),
+`script.json`, `words.json`. A `--format youtube` run is 1920×1080 and adds `youtube.md` (pastable
+metadata) plus per-chapter `segment-NN.mp4` intermediates (and `chapter-NN.mp3` if the single TTS
+call had to fall back to per-chapter synthesis) — see [Long-form YouTube mode](#long-form-youtube-mode).
 
 A reel that includes AI **video** clips is written as **`reel-video.mp4`** instead of `reel.mp4`, so a
 still preview and a later video upgrade of the same run can coexist in the folder rather than one
@@ -289,7 +298,7 @@ Model defaults come from the `--quality` tier (`REELMAESTRO_QUALITY`); the table
 | TTS | `google/gemini-3.1-flash-tts-preview` (voice `Kore`) | `REELMAESTRO_TTS_MODEL` |
 | Word timing | `whisper_timestamped` (**local**, `base` model) | `REELMAESTRO_WHISPER_CMD` / `REELMAESTRO_WHISPER_MODEL` |
 | Music (opt-in) | `google/lyria-3-pro-preview` | `REELMAESTRO_MUSIC_MODEL` |
-| Video (opt-in) | `google/veo-3.1-lite` | `REELMAESTRO_VIDEO_MODEL` |
+| Video (opt-in) | `google/veo-3.1-lite` (youtube mode: `alibaba/wan-2.6`) | `REELMAESTRO_VIDEO_MODEL` |
 
 Tier deltas: `--quality draft` swaps the script model to `anthropic/claude-haiku-4-5`, images to
 `google/gemini-3.1-flash-image` (Nano Banana 2, ~half the image cost), the judge to
@@ -567,7 +576,7 @@ flowchart TD
 
     %% Optional AI video clips
     stills --> veo["🎬 Video model · per scene<br/>Veo image-to-video"]
-    veo --> clips["clip-NN.mp4"]
+    veo --> clips["scene-NN.mp4"]
 
     %% Final assembly
     stills --> mux["🛠️ ffmpeg<br/>Ken Burns + concat + burn-in + mux"]
@@ -591,7 +600,7 @@ flowchart TD
 | TTS | `google/gemini-3.1-flash-tts-preview` | `audio.mp3` | narration + master clock |
 | Word timing *(local)* | `whisper_timestamped` | `words.json` | caption timing → `.ass` |
 | Music *(opt-in)* | `google/lyria-3-pro-preview` | `music.wav` | background soundtrack |
-| Video *(opt-in)* | `google/veo-3.1-lite` | `clip-NN.mp4` | animated scenes |
+| Video *(opt-in)* | `google/veo-3.1-lite` (youtube: `alibaba/wan-2.6`) | `scene-NN.mp4` | animated scenes |
 
 ## Contributing
 
