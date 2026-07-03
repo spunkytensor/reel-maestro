@@ -63,6 +63,33 @@ pub struct Scene {
     /// is ignored. Empty = cut, so older `script.json` files render with hard cuts as before.
     #[serde(default)]
     pub transition: String,
+    /// Video direction for this scene (one camera move + the subject's small action), written by
+    /// the scriptwriter with full story context. Used only in `--video` mode; the video prompt
+    /// falls back to generic gentle motion when empty.
+    //
+    // `#[serde(default)]` for the same back-compat reason as `transition`: older `script.json`
+    // files lack it, and an empty value means "use the generic motion default".
+    #[serde(default)]
+    pub motion_prompt: String,
+}
+
+/// One chapter of a long-form (youtube-format) video: a titled span of the flat
+/// [`Script::scenes`] list plus the narration it covers. Chapters drive per-chapter TTS,
+/// chunked rendering, and the YouTube chapter timestamps in `youtube.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Chapter {
+    /// Short chapter title (shown as a YouTube chapter marker).
+    pub title: String,
+    /// One-line summary from the outline (context for neighboring chapters; not rendered).
+    #[serde(default)]
+    pub summary: String,
+    /// This chapter's narration. All chapters' narrations concatenate (space-joined) to
+    /// [`Script::narration`].
+    pub narration: String,
+    /// Index of this chapter's first scene in the flat [`Script::scenes`] list.
+    pub scene_start: usize,
+    /// How many consecutive scenes belong to this chapter.
+    pub scene_count: usize,
 }
 
 /// The full plan for one video.
@@ -107,6 +134,20 @@ pub struct Script {
     // "no preference", which `pick_voice` maps to the default voice.
     #[serde(default)]
     pub narrator_gender: String,
+    /// Output format this script was written for: `""` (= reel, all older runs) or
+    /// `"youtube"`. Resume reads this so render geometry always matches the stored assets.
+    #[serde(default)]
+    pub format: String,
+    /// Long-form chapter structure (youtube format). Empty for reels — every downstream stage
+    /// takes the original single-pass path when this is empty.
+    #[serde(default)]
+    pub chapters: Vec<Chapter>,
+    /// YouTube video description (youtube format only; written to `youtube.md`).
+    #[serde(default)]
+    pub description: String,
+    /// YouTube tags (youtube format only; written to `youtube.md`).
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl Script {

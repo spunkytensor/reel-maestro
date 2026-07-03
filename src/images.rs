@@ -1,8 +1,9 @@
 // Copyright 2026 Spunky Tensor
 // SPDX-License-Identifier: Apache-2.0
 
-//! Scene prompts -> 1080x1920 JPEG stills. Runs generations concurrently (bounded) and
-//! falls back to a solid placeholder frame so one bad generation never kills the run.
+//! Scene prompts -> canvas-sized JPEG stills (1080x1920 reels / 1920x1080 youtube). Runs
+//! generations concurrently (bounded) and falls back to a solid placeholder frame so one bad
+//! generation never kills the run.
 //!
 //! Consistency works by building a small set of shared **reference images** up front — one
 //! portrait per recurring character and one establishing still per recurring location — then
@@ -20,11 +21,10 @@ use image::{imageops, Rgb, RgbImage};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::config::Canvas;
 use crate::model::{Entity, Scene};
 use crate::openrouter::{self, OpenRouter};
 
-const W: u32 = 1080; // final canvas width  (9:16 vertical)
-const H: u32 = 1920; // final canvas height (9:16 vertical)
 const MAX_CONCURRENT: usize = 4; // in-flight image generations — caps load on the API/our memory
 const MAX_ATTEMPTS: usize = 3; // per-image retries before falling back to a placeholder
 const MIN_ACCEPTABLE_SCORE: i64 = 60; // QA floor: below this, spend extra re-rolls trying to clear it
@@ -60,6 +60,8 @@ struct SceneCtx<'a> {
     /// Per-scene validation effort: `0` = off (one candidate, no judge); `N >= 2` = generate up to N
     /// candidates, judge each with the vision model, and keep the most consistent (re-rolling).
     validate: usize,
+    /// Output canvas the stills are cropped/resized to.
+    canvas: Canvas,
     dir: &'a Path,
 }
 
@@ -90,11 +92,12 @@ pub async fn generate(
     character_ref: Option<&Path>,
     consistency: bool,
     validate: usize,
+    canvas: Canvas,
     dir: &Path,
 ) -> Result<Vec<PathBuf>> {
     // Build the shared, per-entity reference images once.
     let (effective_chars, char_urls, loc_urls, forced_all) = if consistency {
-        build_references(or, characters, locations, character_ref, dir).await
+        build_references(or, characters, locations, character_ref, canvas, dir).await
     } else {
         (Vec::new(), HashMap::new(), HashMap::new(), false)
     };
@@ -106,6 +109,7 @@ pub async fn generate(
         locations,
         forced_all,
         validate,
+        canvas,
         dir,
     };
     let ctx = &ctx;
@@ -242,8 +246,9 @@ async fn render_scene(
     // fully-consistent one. If the best so far is still below the quality floor (a malformed or
     // badly-drifting frame), we spend a few EXTRA re-rolls (up to MAX_VALIDATE_ATTEMPTS) trying to
     // clear it before settling. `validate == 0` skips the judge (one candidate). A scene with no
-    // references has nothing to compare against, so validation is a no-op there regardless.
-    let validate = ctx.validate >= 1 && !references.is_empty();
+    // references is still judged, on a reduced rubric (composition + anatomy/structure only) —
+    // a standalone frame can be malformed too.
+    let validate = ctx.validate >= 1;
     let nominal = ctx.validate.max(1);
     let max_attempts = if validate {
         nominal.max(MAX_VALIDATE_ATTEMPTS)
@@ -260,6 +265,8 @@ async fn render_scene(
             location,
             &references,
             true,
+            &scene.line,
+            ctx.canvas,
             &label,
         )
         .await
@@ -323,7 +330,7 @@ async fn render_scene(
         Some((im, s)) => (im, Some(s)),
         None => {
             eprintln!("  {label}: image generation failed after retries; using placeholder");
-            (placeholder(i), None)
+            (placeholder(i, ctx.canvas), None)
         }
     };
     // Surface the score we settled on (so a re-roll's outcome is visible), and warn loudly when even
@@ -341,7 +348,7 @@ async fn render_scene(
     }
     if let Err(e) = img.save(&path) {
         eprintln!("  {label}: saving image failed ({e}); writing placeholder");
-        let _ = placeholder(i).save(&path);
+        let _ = placeholder(i, ctx.canvas).save(&path);
     }
     path
 }
@@ -356,17 +363,17 @@ fn jpeg_data_url(img: &RgbImage) -> Option<String> {
     Some(openrouter::data_url_from_image(&buf.into_inner()))
 }
 
-/// Ask the text model (multimodal) whether a candidate scene matches its references. Returns the
-/// verdict, or `None` if the judge call fails (caller treats that as "keep the candidate").
-async fn judge_scene(
-    or: &OpenRouter,
-    candidate_url: &str,
+/// Build the judge's instruction text. Pure (no I/O) so the rubric selection is unit-testable.
+/// With references attached the full continuity rubric applies; without them there is nothing to
+/// compare against, so a reduced rubric checks only what a standalone frame can get wrong:
+/// composition (single unified photo) and anatomical/structural soundness.
+fn judge_instruction(
     people: &[&Entity],
     location: Option<&Entity>,
-    references: &[Reference],
-    label: &str,
-) -> Option<Verdict> {
-    let mut instruction = String::from(
+    has_references: bool,
+) -> String {
+    let mut instruction = if has_references {
+        String::from(
         "The FIRST image is the CANDIDATE scene to check. The labeled images after it are the \
          references it must match. Verify ALL of: (a) each listed person matches their reference — \
          face, hair (incl. worn up/down), build, age, and full outfit including sleeve length; \
@@ -403,7 +410,13 @@ async fn judge_scene(
          feet/legs/body rest ON the ground, floor, or structure with correct contact and scale, NOT \
          floating, hovering, sunk into the surface, or perched off the EDGE of a surface with its \
          body or legs hanging unsupported in the air (e.g. an animal standing half off the side of a \
-         narrow bridge). \
+         narrow bridge); AND (iv) any device with a screen (monitor, laptop, phone, tablet, TV) is \
+         physically coherent: its display is on ONE face only, the FRONT toward its user — flag as a \
+         HARD failure a screen or glowing interface rendered on the BACK, side, or edge of the \
+         device, a picture on a monitor's rear casing, and any floating, duplicated, or doubled \
+         screen. Any legible-looking on-screen user interface, form, dashboard, app, web page, or \
+         text is ALSO a failure here: real screens in a photo should read as a soft glow or an \
+         out-of-focus blur, and the model renders literal UI/text as garbled gibberish. \
          Judge the structure's and subjects' OWN physical plausibility here, separately from whether \
          it matches the reference. \
          Judge ONLY what is visible: if a reference DETAIL is out of frame, cropped, occluded, or too \
@@ -415,7 +428,37 @@ async fn judge_scene(
          otherwise absent), that is a HARD failure (a headless/faceless featured character is a \
          broken composition and makes identity impossible to verify) — set consistent=false and a \
          LOW score (below 50), even though it is technically out of frame. ",
-    );
+        )
+    } else {
+        // No references: nothing to compare identity/setting against, but a standalone frame can
+        // still be malformed. Check only intrinsic soundness.
+        String::from(
+            "The image is a CANDIDATE scene to check on its own (there are no references to \
+             compare against — do NOT judge identity or setting continuity). Verify ALL of: \
+             (a) it is a single unified photo (no split-screen, diptych, collage, grid, or \
+             multi-panel composition), with every figure fully and solidly rendered — no ghosted, \
+             faded, translucent, duplicated, merged, or cloned figures; (b) the image is \
+             anatomically AND structurally sound — a HARD failure when it is not (set \
+             consistent=false and a LOW score, below 50): (i) every focal subject (person or \
+             animal) has intact, correct anatomy (exactly one head with a normal face, the right \
+             number and form of eyes, limbs, hands, and fingers, properly attached), with NO \
+             missing, extra, duplicated, fused, melted, distorted, or garbled body parts; AND \
+             (ii) the built structures and key objects in the scene (a bridge, path, stairs, \
+             building, road, fence, furniture, vehicle) are physically coherent and plausible — \
+             connected, self-supporting, and continuous, with NO floating, disjointed, broken, \
+             melted, warped, or impossible geometry; AND (iii) every subject is physically \
+             GROUNDED and supported by the surface it is on, NOT floating, hovering, sunk into \
+             the surface, or perched unsupported off an edge; AND (iv) any device with a screen \
+             (monitor, laptop, phone, tablet, TV) is physically coherent — its display is on the \
+             FRONT face only. Flag as a HARD failure a screen or glowing interface on the BACK, \
+             side, or edge of the device, a picture on a monitor's rear casing, a floating or \
+             duplicated screen, and any legible-looking on-screen UI, form, dashboard, app, web \
+             page, or text (real screens read as a soft glow or blur; literal UI/text renders as \
+             garbled gibberish). Every featured person must also \
+             have their whole head within the frame — a head cut off by the frame edge is a HARD \
+             failure (set consistent=false and a LOW score, below 50). ",
+        )
+    };
     if !people.is_empty() {
         instruction.push_str("People who must appear: ");
         for p in people {
@@ -429,6 +472,21 @@ async fn judge_scene(
         "Set consistent=true only if ALL checks pass. score is 0-100 (100 = perfect). issues = a \
          brief description of any problem, or empty when consistent.",
     );
+    instruction
+}
+
+/// Ask the judge model (multimodal) whether a candidate scene matches its references — or, with
+/// no references, whether it is intrinsically well-formed. Returns the verdict, or `None` if the
+/// judge call fails (caller treats that as "keep the candidate").
+async fn judge_scene(
+    or: &OpenRouter,
+    candidate_url: &str,
+    people: &[&Entity],
+    location: Option<&Entity>,
+    references: &[Reference],
+    label: &str,
+) -> Option<Verdict> {
+    let instruction = judge_instruction(people, location, !references.is_empty());
 
     let mut images = vec![(
         "CANDIDATE scene image (the one to check)".to_string(),
@@ -474,6 +532,7 @@ pub async fn generate_poster(
     prompt: &str,
     protagonist: &str,
     references: &[String],
+    canvas: Canvas,
     dir: &Path,
 ) -> Option<PathBuf> {
     let person = Entity {
@@ -492,7 +551,7 @@ pub async fn generate_poster(
             data_url: url.clone(),
         })
         .collect();
-    let img = generate_one(or, prompt, &people, None, &refs, true, "poster").await?;
+    let img = generate_one(or, prompt, &people, None, &refs, true, "", canvas, "poster").await?;
     let path = dir.join("poster.jpg");
     img.save(&path).ok()?;
     Some(path)
@@ -516,6 +575,7 @@ async fn build_references(
     characters: &[Entity],
     locations: &[Entity],
     character_ref: Option<&Path>,
+    canvas: Canvas,
     dir: &Path,
 ) -> (
     Vec<Entity>,
@@ -538,7 +598,7 @@ async fn build_references(
     for (i, c) in effective.iter().enumerate() {
         // The user photo overrides the FIRST character's reference; the rest are generated.
         let photo = if i == 0 { character_ref } else { None };
-        match build_character_ref(or, c, photo, dir).await {
+        match build_character_ref(or, c, photo, canvas, dir).await {
             Some(urls) => {
                 // Mirror the primary character to the legacy `character-ref.jpg` the poster reads.
                 if i == 0 {
@@ -555,7 +615,7 @@ async fn build_references(
 
     let mut loc_urls: HashMap<String, String> = HashMap::new();
     for l in locations {
-        match build_location_ref(or, l, dir).await {
+        match build_location_ref(or, l, canvas, dir).await {
             Some(url) => {
                 loc_urls.insert(l.id.clone(), url);
             }
@@ -587,6 +647,7 @@ async fn build_character_ref(
     or: &OpenRouter,
     entity: &Entity,
     photo: Option<&Path>,
+    canvas: Canvas,
     dir: &Path,
 ) -> Option<Vec<String>> {
     if let Some(p) = photo {
@@ -619,6 +680,8 @@ async fn build_character_ref(
         None,
         &[],
         false,
+        "",
+        canvas,
         &format!("character \"{}\"", entity.id),
     )
     .await?;
@@ -643,6 +706,8 @@ async fn build_character_ref(
         None,
         &[],
         false,
+        "",
+        canvas,
         &format!("character \"{}\" (3/4 view)", entity.id),
     )
     .await
@@ -659,7 +724,12 @@ async fn build_character_ref(
 
 /// Produce a recurring location's establishing reference (no people) as a data URL, generated from
 /// its canonical description. Saved as `location-<id>.jpg`.
-async fn build_location_ref(or: &OpenRouter, entity: &Entity, dir: &Path) -> Option<String> {
+async fn build_location_ref(
+    or: &OpenRouter,
+    entity: &Entity,
+    canvas: Canvas,
+    dir: &Path,
+) -> Option<String> {
     println!(
         "  building location reference \"{}\": {}",
         entity.id, entity.description
@@ -679,6 +749,8 @@ async fn build_location_ref(or: &OpenRouter, entity: &Entity, dir: &Path) -> Opt
         None,
         &[],
         false,
+        "",
+        canvas,
         &format!("location \"{}\"", entity.id),
     )
     .await?;
@@ -692,21 +764,37 @@ async fn build_location_ref(or: &OpenRouter, entity: &Entity, dir: &Path) -> Opt
 /// Assemble the text prompt for one image generation. Pure (no I/O) so the branch logic is
 /// unit-testable. `people`/`location` are the recurring entities in this scene (for the canonical
 /// text lock); `references` are the attached anchor images, listed in attachment order.
+/// `narration_line` is the spoken beat this frame accompanies (empty for references/posters).
+/// `canvas` sets the aspect the prompt asks for (vertical 9:16 reel / landscape 16:9 youtube).
 fn build_image_prompt(
     image_prompt: &str,
     people: &[&Entity],
     location: Option<&Entity>,
     references: &[Reference],
     style: bool,
+    narration_line: &str,
+    canvas: Canvas,
 ) -> String {
-    // An explicit instruction makes image-output models far less likely to reply with text.
-    let mut prompt = String::from(
-        "Generate one photorealistic vertical 9:16 photograph. Do not include any text, words, \
-         captions, or watermarks in the image. Render a SINGLE, unified, full-frame photograph — \
+    let aspect = if canvas.w > canvas.h {
+        "landscape 16:9"
+    } else {
+        "vertical 9:16"
+    };
+    // An explicit instruction makes image-output models far less likely to reply with text, and
+    // the screen/UI clause heads off the two classic device failure modes: garbled on-screen
+    // interfaces and a display painted onto the wrong face of a monitor.
+    let mut prompt = format!(
+        "Generate one photorealistic {aspect} photograph. Do not include any text, words, \
+         captions, or watermarks in the image, and do not render any user interface, software \
+         window, form, dashboard, web page, app, chart, or readable text on any screen — those \
+         come out as garbled gibberish. Any device screen (monitor, laptop, phone, TV) shows \
+         only a soft, indistinct glow or an out-of-focus blur, and a display appears ONLY on the \
+         device's FRONT face — never on its back, sides, or edges (the rear of a monitor is a \
+         solid, opaque casing with no picture). Render a SINGLE, unified, full-frame photograph — \
          never a split-screen, diptych, side-by-side, before/after, collage, grid, triptych, or \
-         multi-panel composition. Every person must be fully and solidly rendered: no translucent, \
-         ghosted, faded, doubled, or partially-formed figures, and no posters, mirrors, or \
-         reflections that read as extra people.",
+         multi-panel composition. Every person must be fully and solidly rendered: no \
+         translucent, ghosted, faded, doubled, or partially-formed figures, and no posters, \
+         mirrors, or reflections that read as extra people."
     );
 
     if !references.is_empty() {
@@ -750,24 +838,14 @@ fn build_image_prompt(
         prompt.push_str(HOUSE_STYLE);
     }
 
-    // Canonical text lock — pins the fixed traits even when a reference image is missing.
-    let described: Vec<&&Entity> = people
-        .iter()
-        .filter(|p| !p.description.trim().is_empty())
-        .collect();
-    if !described.is_empty() {
-        prompt.push_str(" Recurring people in this scene, keep EXACTLY consistent: ");
-        for p in described {
-            prompt.push_str(&format!("[{}] {}; ", p.id, p.description));
-        }
-    }
-    if let Some(loc) = location {
-        if !loc.description.trim().is_empty() {
-            prompt.push_str(&format!(
-                " Setting, keep EXACTLY consistent: {}.",
-                loc.description
-            ));
-        }
+    // The spoken beat this frame accompanies, so the visual matches the story moment rather
+    // than drifting to a generic rendering of the image prompt alone.
+    if !narration_line.trim().is_empty() {
+        prompt.push_str(&format!(
+            " This frame illustrates the spoken narration: \"{}\" — match its moment and \
+             emotion, but do NOT render these words as text.",
+            narration_line.trim()
+        ));
     }
 
     prompt.push_str(&format!(" Scene: {image_prompt}"));
@@ -775,7 +853,11 @@ fn build_image_prompt(
 }
 
 /// Try to generate and crop one image, retrying on soft refusals / decode errors. `people`,
-/// `location`, and `references` steer the model toward consistent recurring entities.
+/// `location`, and `references` steer the model toward consistent recurring entities;
+/// `narration_line` ties the frame to its spoken beat (pass `""` for references/posters).
+// Reference generation, posters, and scenes share this one entry point; the argument count
+// mirrors `build_image_prompt` rather than warranting an options struct.
+#[allow(clippy::too_many_arguments)]
 async fn generate_one(
     or: &OpenRouter,
     image_prompt: &str,
@@ -783,9 +865,19 @@ async fn generate_one(
     location: Option<&Entity>,
     references: &[Reference],
     style: bool,
+    narration_line: &str,
+    canvas: Canvas,
     label: &str,
 ) -> Option<RgbImage> {
-    let prompt = build_image_prompt(image_prompt, people, location, references, style);
+    let prompt = build_image_prompt(
+        image_prompt,
+        people,
+        location,
+        references,
+        style,
+        narration_line,
+        canvas,
+    );
     // Pass each reference as (label, data_url) so the model receives the label inline before its image.
     let labeled: Vec<(String, String)> = references
         .iter()
@@ -794,7 +886,7 @@ async fn generate_one(
 
     for attempt in 1..=MAX_ATTEMPTS {
         match or.generate_image(&prompt, &labeled).await {
-            Ok(bytes) => match crop_to_vertical(&bytes) {
+            Ok(bytes) => match crop_to_aspect(&bytes, canvas) {
                 Ok(img) => return Some(img),
                 Err(e) => {
                     eprintln!("  {label}: decode/crop failed (try {attempt}/{MAX_ATTEMPTS}): {e}")
@@ -820,8 +912,9 @@ fn location_anchors(scenes: &[Scene]) -> HashMap<String, usize> {
     anchor_of
 }
 
-/// Sanitize a model-generated entity id into a filesystem-safe filename stem.
-fn slug(id: &str) -> String {
+/// Sanitize a model-generated entity id into a filesystem-safe filename stem. `pub(crate)` so
+/// video mode can find the `character-<id>.jpg` portraits this module saved.
+pub(crate) fn slug(id: &str) -> String {
     let s: String = id
         .trim()
         .chars()
@@ -835,11 +928,12 @@ fn slug(id: &str) -> String {
     }
 }
 
-/// Center-crop to 9:16 then resize to the final canvas.
-fn crop_to_vertical(bytes: &[u8]) -> Result<RgbImage> {
+/// Center-crop to the canvas's aspect ratio then resize to the canvas. The safety net behind
+/// the aspect the API was asked for — a no-op crop when the model already returned that ratio.
+fn crop_to_aspect(bytes: &[u8], canvas: Canvas) -> Result<RgbImage> {
     let img = image::load_from_memory(bytes)?.to_rgb8();
     let (w, h) = img.dimensions();
-    let target = W as f64 / H as f64;
+    let target = canvas.w as f64 / canvas.h as f64;
     let current = w as f64 / h as f64;
 
     let (cw, ch) = if current > target {
@@ -852,27 +946,31 @@ fn crop_to_vertical(bytes: &[u8]) -> Result<RgbImage> {
     let cropped = imageops::crop_imm(&img, x, y, cw, ch).to_image();
     Ok(imageops::resize(
         &cropped,
-        W,
-        H,
+        canvas.w,
+        canvas.h,
         imageops::FilterType::Lanczos3,
     ))
 }
 
 /// A simple slate so a failed scene still renders something on-screen.
-fn placeholder(idx: usize) -> RgbImage {
+fn placeholder(idx: usize, canvas: Canvas) -> RgbImage {
     let shades = [
         Rgb([30, 30, 40]),
         Rgb([40, 30, 45]),
         Rgb([30, 40, 45]),
         Rgb([45, 40, 30]),
     ];
-    RgbImage::from_pixel(W, H, shades[idx % shades.len()])
+    RgbImage::from_pixel(canvas.w, canvas.h, shades[idx % shades.len()])
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_image_prompt, location_anchors, slug, Reference};
+    use super::{build_image_prompt, judge_instruction, location_anchors, slug, Reference};
+    use crate::config::Canvas;
     use crate::model::{Entity, Scene};
+
+    const REEL: Canvas = Canvas { w: 1080, h: 1920 };
+    const YT: Canvas = Canvas { w: 1920, h: 1080 };
 
     fn ent(id: &str, desc: &str) -> Entity {
         Entity {
@@ -896,14 +994,23 @@ mod tests {
                 data_url: "y".to_string(),
             },
         ];
-        let p = build_image_prompt("they laugh at a table", &people, None, &refs, false);
+        let p = build_image_prompt(
+            "they laugh at a table",
+            &people,
+            None,
+            &refs,
+            false,
+            "",
+            REEL,
+        );
         // References are labeled inline (in the API payload), so the prompt restates the locks
         // rather than enumerating images by number.
         assert!(p.contains("Each attached image is preceded by a label"));
         assert!(p.contains("Match each attached reference EXACTLY"));
         assert!(p.contains("DIFFERENT individual"));
-        // Canonical text lock repeats the fixed traits.
-        assert!(p.contains("keep EXACTLY consistent"));
+        // Canonical text lock repeats the fixed traits — exactly ONCE (a duplicated lock block
+        // shipped once as a copy-paste bug; this pins the fix).
+        assert_eq!(p.matches("keep EXACTLY consistent").count(), 1);
         assert!(p.contains("black hair in a low bun"));
         assert!(p.contains("Scene: they laugh at a table"));
         // style=false → no house-style suffix.
@@ -912,19 +1019,25 @@ mod tests {
 
     #[test]
     fn house_style_only_when_enabled() {
-        assert!(build_image_prompt("a street", &[], None, &[], true).contains("Photographic style"));
         assert!(
-            !build_image_prompt("a street", &[], None, &[], false).contains("Photographic style")
+            build_image_prompt("a street", &[], None, &[], true, "", REEL)
+                .contains("Photographic style")
+        );
+        assert!(
+            !build_image_prompt("a street", &[], None, &[], false, "", REEL)
+                .contains("Photographic style")
         );
     }
 
     #[test]
     fn prompt_injects_location_text_lock() {
         let loc = ent("bistro", "exposed brick, brass lights, amber palette");
-        let p = build_image_prompt("a candlelit table", &[], Some(&loc), &[], false);
+        let p = build_image_prompt("a candlelit table", &[], Some(&loc), &[], false, "", REEL);
         assert!(p.contains(
             "Setting, keep EXACTLY consistent: exposed brick, brass lights, amber palette"
         ));
+        // The setting lock appears exactly once (pins the duplicated-lock fix).
+        assert_eq!(p.matches("Setting, keep EXACTLY consistent").count(), 1);
         // No references attached -> no reference lock block.
         assert!(!p.contains("Match each attached reference"));
     }
@@ -932,10 +1045,70 @@ mod tests {
     #[test]
     fn prompt_without_entities_is_independent() {
         // No recurring people/location and no references: a plain, independent generation.
-        let p = build_image_prompt("a bustling crowd", &[], None, &[], false);
+        let p = build_image_prompt("a bustling crowd", &[], None, &[], false, "", REEL);
         assert!(!p.contains("Match each attached reference"));
         assert!(!p.contains("keep EXACTLY consistent"));
         assert!(p.contains("Scene: a bustling crowd"));
+    }
+
+    #[test]
+    fn prompt_ties_frame_to_narration_line() {
+        // The spoken beat is quoted so the visual matches the story moment...
+        let p = build_image_prompt(
+            "a snowy path",
+            &[],
+            None,
+            &[],
+            true,
+            "He found a mitten.",
+            REEL,
+        );
+        assert!(p.contains("spoken narration: \"He found a mitten.\""));
+        assert!(p.contains("do NOT render these words as text"));
+        // ...but reference portraits / posters pass "" and get no narration block.
+        let p = build_image_prompt("a portrait", &[], None, &[], false, "  ", REEL);
+        assert!(!p.contains("spoken narration"));
+    }
+
+    #[test]
+    fn prompt_aspect_tracks_canvas_and_bans_screen_ui() {
+        // Aspect word follows the canvas orientation, not a hardcoded "vertical".
+        let reel = build_image_prompt("an office", &[], None, &[], false, "", REEL);
+        assert!(reel.contains("photorealistic vertical 9:16 photograph"));
+        let yt = build_image_prompt("an office", &[], None, &[], false, "", YT);
+        assert!(yt.contains("photorealistic landscape 16:9 photograph"));
+        // The screen/UI guard is present in both: no rendered UI, and a display only on the
+        // device's front face (kills the "screen on the back of the monitor" artifact).
+        for p in [&reel, &yt] {
+            assert!(p.contains("do not render any user interface"));
+            assert!(p.contains("device's FRONT face"));
+        }
+    }
+
+    #[test]
+    fn judge_rubric_reduces_without_references() {
+        let man = ent("man", "a man ~28, dark wavy hair");
+        let people = vec![&man];
+        // With references: the full continuity rubric.
+        let full = judge_instruction(&people, None, true);
+        assert!(full.contains("references it must match"));
+        assert!(full.contains("SAME seating"));
+        // Without references: only composition + anatomy/structure checks remain.
+        let reduced = judge_instruction(&people, None, false);
+        assert!(reduced.contains("no references to compare against"));
+        assert!(reduced.contains("anatomically AND structurally sound"));
+        assert!(!reduced.contains("seating"));
+        assert!(!reduced.contains("must match their reference"));
+        // BOTH rubrics carry the device-screen check (the reference-less reduced rubric is the
+        // one that applies to abstract-topic scenes like the office/monitor shot).
+        for i in [&full, &reduced] {
+            assert!(i.contains("rear casing"));
+            assert!(i.contains("garbled gibberish"));
+        }
+        // Both end with the verdict contract.
+        for i in [&full, &reduced] {
+            assert!(i.contains("Set consistent=true only if ALL checks pass"));
+        }
     }
 
     #[test]
@@ -946,6 +1119,7 @@ mod tests {
             cast_ids: Vec::new(),
             location_id: loc.to_string(),
             transition: String::new(),
+            motion_prompt: String::new(),
         };
         // scenes: [none, none, bistro, bistro, bistro] → bistro's anchor is index 2.
         let scenes = vec![sc(""), sc(""), sc("bistro"), sc("bistro"), sc("bistro")];

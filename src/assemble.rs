@@ -21,9 +21,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use crate::captions;
+use crate::captions::{self, CaptionStyle};
+use crate::config::Canvas;
 use crate::ffmpeg;
-use crate::model::{Scene, WordTiming};
+use crate::model::{Chapter, Scene, WordTiming};
 
 /// Where DejaVu ships on Debian/Ubuntu. libass needs a fonts directory to render captions;
 /// on Linux we point it here, and on macOS/Windows (where this path is absent) we fall back
@@ -60,64 +61,49 @@ pub struct BuildOptions<'a> {
     pub dissolve_seconds: f64,
     /// Apply the unified cinematic colour grade / grain and cross-scene exposure match.
     pub grade: bool,
+    /// Output canvas (1080x1920 reel / 1920x1080 youtube).
+    pub canvas: Canvas,
+    /// Format-dependent caption look (PlayRes, font size, margins).
+    pub caption_style: CaptionStyle,
+    /// Long-form chapter structure. Empty ⇒ the original single-pass render; non-empty ⇒
+    /// chapter-chunked rendering (one video-only segment per chapter, then concat + audio mux).
+    pub chapters: &'a [Chapter],
+    /// Optional watermark image (PNG with alpha), overlaid on the final video, scaled to the
+    /// canvas. Applies in both fresh and `--from` runs (it's an assembly-stage overlay).
+    pub watermark: Option<&'a Path>,
 }
 
 /// Build `reel.mp4` in `dir`. `images` are scene stills in order; `audio` and the
-/// produced `reel.ass` live in `dir`.
+/// produced `reel.ass` live in `dir`. Chaptered (youtube) runs render one video-only segment
+/// per chapter and concat them so a long reel never holds every supersampled still in one
+/// ffmpeg filtergraph; reels keep the original single-pass render.
 pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
-    let BuildOptions {
-        dir,
-        scenes,
-        images,
-        clips,
-        words,
-        audio,
-        music,
-        duck,
-        music_volume,
-        captions_on,
-        dissolve,
-        dissolve_seconds,
-        grade,
-    } = opts;
-
-    if images.is_empty() {
+    if opts.images.is_empty() {
         bail!("no scene images to assemble");
     }
     // Slice the audio timeline into one duration per scene, snapped to real word timings so cuts
     // land on the voiceover beats (see `scene_durations`).
-    let durations = scene_durations(scenes, words, audio)?;
-
-    // Write captions only when enabled and there are timed words to show. The returned
-    // `Some(name)` signals render_reel to burn this ASS file in; `None` skips the subtitles
-    // filter entirely (e.g. silent/no-narration reels have no words to caption).
-    let ass_name = "reel.ass";
-    let captions = if captions_on && !words.is_empty() {
-        std::fs::write(dir.join(ass_name), captions::build_ass(words))?;
-        Some(ass_name)
-    } else {
-        None
-    };
+    let durations = scene_durations(opts.scenes, opts.words, opts.audio)?;
 
     // Decide each scene's visual source: an AI video clip if one was produced for that
-    // index, otherwise its still (which render_reel animates with Ken Burns). render_reel
-    // works in `dir`, so we pass bare file names rather than full paths.
+    // index, otherwise its still (which the renderer animates with Ken Burns). Renders
+    // work in `dir`, so we pass bare file names rather than full paths.
     let basename = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
-    let media: Vec<ffmpeg::SceneMedia> = images
+    let media: Vec<ffmpeg::SceneMedia> = opts
+        .images
         .iter()
         .enumerate()
-        .map(|(i, img)| match clips.get(i).and_then(|c| c.as_ref()) {
-            Some(clip) => ffmpeg::SceneMedia::Clip(basename(clip)),
-            None => ffmpeg::SceneMedia::Still(basename(img)),
-        })
+        .map(
+            |(i, img)| match opts.clips.get(i).and_then(|c| c.as_ref()) {
+                Some(clip) => ffmpeg::SceneMedia::Clip(basename(clip)),
+                None => ffmpeg::SceneMedia::Still(basename(img)),
+            },
+        )
         .collect();
 
     // Decide which scene junctions cross-dissolve (only between two consecutive stills the
     // scriptwriter flagged); everything else stays a hard cut.
-    let dissolves = dissolve_plan(scenes, &media, dissolve);
-
-    let audio_name = audio.file_name().unwrap().to_string_lossy().into_owned();
-    let music_name = music.map(basename);
+    let dissolves = dissolve_plan(opts.scenes, &media, opts.dissolve);
 
     // FONTS_DIR is a Linux path; on macOS/Windows it won't exist, so only pass it
     // when present and otherwise let libass fall back to the system font provider.
@@ -125,28 +111,167 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
 
     // Name a video-upgraded reel separately so a still preview (`reel.mp4`) and a later video
     // upgrade (`reel-video.mp4`) can coexist in the same run folder instead of overwriting.
-    let has_video = clips.iter().any(|c| c.is_some());
+    let has_video = opts.clips.iter().any(|c| c.is_some());
     let output = if has_video {
         "reel-video.mp4"
     } else {
         "reel.mp4"
     };
+
+    if opts.chapters.is_empty() {
+        build_single_pass(&opts, &media, &durations, &dissolves, fontsdir, output)
+    } else {
+        build_chunked(&opts, &media, &durations, &dissolves, fontsdir, output)
+    }
+}
+
+/// The original single-pass render: one ffmpeg invocation for the whole reel.
+fn build_single_pass(
+    opts: &BuildOptions<'_>,
+    media: &[ffmpeg::SceneMedia],
+    durations: &[f64],
+    dissolves: &[bool],
+    fontsdir: Option<&str>,
+    output: &str,
+) -> Result<PathBuf> {
+    // Write captions only when enabled and there are timed words to show. The returned
+    // `Some(name)` signals render_reel to burn this ASS file in; `None` skips the subtitles
+    // filter entirely (e.g. silent/no-narration reels have no words to caption).
+    let ass_name = "reel.ass";
+    let captions = if opts.captions_on && !opts.words.is_empty() {
+        std::fs::write(
+            opts.dir.join(ass_name),
+            captions::build_ass(opts.words, &opts.caption_style),
+        )?;
+        Some(ass_name)
+    } else {
+        None
+    };
+
+    let basename = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
+    let audio_name = basename(opts.audio);
+    let music_name = opts.music.map(basename);
+    // The watermark is an arbitrary user path (not in `dir`), so pass it whole — ffmpeg reads it
+    // as a plain `-i` input argument, not inside the filtergraph.
+    let watermark = opts.watermark.map(|p| p.to_string_lossy().into_owned());
+
     ffmpeg::render_reel(ffmpeg::RenderReelOptions {
-        dir,
-        media: &media,
-        durations: &durations,
-        dissolves: &dissolves,
-        dissolve_seconds,
-        grade,
+        dir: opts.dir,
+        media,
+        durations,
+        dissolves,
+        dissolve_seconds: opts.dissolve_seconds,
+        grade: opts.grade,
         audio: &audio_name,
         music: music_name.as_deref(),
-        duck,
-        music_volume,
+        duck: opts.duck,
+        music_volume: opts.music_volume,
         captions,
         fontsdir,
+        canvas: opts.canvas,
+        watermark: watermark.as_deref(),
         output,
     })?;
-    Ok(dir.join(output))
+    Ok(opts.dir.join(output))
+}
+
+/// Chapter-chunked render: each chapter becomes a video-only `segment-NN.mp4` (identical encode
+/// params), the narration+music mix is built once as `mix.m4a`, and the final file is a
+/// stream-copy concat + mux. Chapter boundaries are always hard cuts.
+fn build_chunked(
+    opts: &BuildOptions<'_>,
+    media: &[ffmpeg::SceneMedia],
+    durations: &[f64],
+    dissolves: &[bool],
+    fontsdir: Option<&str>,
+    output: &str,
+) -> Result<PathBuf> {
+    let windows = chapter_windows(opts.chapters, durations);
+    let mut segments: Vec<String> = Vec::with_capacity(opts.chapters.len());
+    // Burned into each segment (so the stream-copy concat keeps it) at the same spot every time.
+    let watermark = opts.watermark.map(|p| p.to_string_lossy().into_owned());
+
+    for (c, (chapter, &(start, end))) in opts.chapters.iter().zip(&windows).enumerate() {
+        let range = chapter.scene_start..(chapter.scene_start + chapter.scene_count);
+        if range.end > media.len() {
+            bail!(
+                "chapter {c} scene range {range:?} exceeds the {} scenes present",
+                media.len()
+            );
+        }
+        // Per-segment captions: the chapter's words, re-based to this segment's clock.
+        let ass_name = format!("segment-{c:02}.ass");
+        let captions = if opts.captions_on && !opts.words.is_empty() {
+            let local = captions::rebase(opts.words, start, end);
+            std::fs::write(
+                opts.dir.join(&ass_name),
+                captions::build_ass(&local, &opts.caption_style),
+            )?;
+            Some(ass_name.as_str())
+        } else {
+            None
+        };
+        // Intra-chapter junctions only: dissolves[j] sits between scene j and j+1, so a
+        // chapter spanning scenes [s, s+k) owns junctions [s, s+k-1).
+        let seg_dissolves = &dissolves[range.start..(range.end - 1).max(range.start)];
+
+        let seg_name = format!("segment-{c:02}.mp4");
+        println!(
+            "  rendering chapter {}/{} ({} scenes) ...",
+            c + 1,
+            opts.chapters.len(),
+            chapter.scene_count
+        );
+        ffmpeg::render_segment(ffmpeg::RenderSegmentOptions {
+            dir: opts.dir,
+            media: &media[range.clone()],
+            durations: &durations[range.clone()],
+            dissolves: seg_dissolves,
+            dissolve_seconds: opts.dissolve_seconds,
+            grade: opts.grade,
+            captions,
+            fontsdir,
+            canvas: opts.canvas,
+            watermark: watermark.as_deref(),
+            output: &seg_name,
+        })?;
+        segments.push(seg_name);
+    }
+
+    // The full-length narration+music mix in its own pass, so music runs continuously across
+    // chapter boundaries instead of restarting per segment.
+    let basename = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
+    let total: f64 = durations.iter().sum();
+    let mix_name = "mix.m4a";
+    ffmpeg::mix_audio(
+        opts.dir,
+        &basename(opts.audio),
+        opts.music.map(basename).as_deref(),
+        opts.duck,
+        opts.music_volume,
+        total,
+        mix_name,
+    )?;
+
+    ffmpeg::concat_segments(opts.dir, &segments, mix_name, output)?;
+    Ok(opts.dir.join(output))
+}
+
+/// `[start, end)` on the reel timeline for each chapter, from the per-scene durations (prefix
+/// sums over the chapter scene ranges). Pure so the timestamp math is unit-testable.
+pub fn chapter_windows(chapters: &[Chapter], durations: &[f64]) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(chapters.len());
+    let mut t = 0.0;
+    for ch in chapters {
+        let len: f64 = durations
+            .iter()
+            .skip(ch.scene_start)
+            .take(ch.scene_count)
+            .sum();
+        out.push((t, t + len));
+        t += len;
+    }
+    out
 }
 
 /// Per-scene durations in seconds. Each scene is shown while its narration line is actually being
@@ -285,6 +410,7 @@ mod tests {
             cast_ids: Vec::new(),
             location_id: String::new(),
             transition: transition.to_string(),
+            motion_prompt: String::new(),
         }
     }
 
@@ -296,6 +422,7 @@ mod tests {
             cast_ids: Vec::new(),
             location_id: String::new(),
             transition: String::new(),
+            motion_prompt: String::new(),
         };
         let word = |w: &str, s: f64, e: f64| WordTiming {
             word: w.into(),
@@ -429,6 +556,7 @@ mod tests {
                 cast_ids: Vec::new(),
                 location_id: String::new(),
                 transition: String::new(),
+                motion_prompt: String::new(),
             },
             Scene {
                 line: "four five six".into(),
@@ -436,6 +564,7 @@ mod tests {
                 cast_ids: Vec::new(),
                 location_id: String::new(),
                 transition: String::new(),
+                motion_prompt: String::new(),
             },
             Scene {
                 line: "seven eight nine".into(),
@@ -443,6 +572,7 @@ mod tests {
                 cast_ids: Vec::new(),
                 location_id: String::new(),
                 transition: String::new(),
+                motion_prompt: String::new(),
             },
         ];
         let labels = [
@@ -473,6 +603,10 @@ mod tests {
             dissolve: false,
             dissolve_seconds: 0.5,
             grade: false,
+            canvas: crate::config::canvas(crate::config::Format::Reel),
+            caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
+            chapters: &[],
+            watermark: None,
         })
         .unwrap();
         assert!(reel.exists(), "reel.mp4 was not produced");
@@ -501,6 +635,172 @@ mod tests {
         );
         println!(
             "render_smoke OK -> {} ({dur:.1}s, {})",
+            reel.display(),
+            dims.trim()
+        );
+    }
+
+    #[test]
+    fn chapter_windows_are_prefix_sums() {
+        use crate::model::Chapter;
+        let ch = |start: usize, count: usize| Chapter {
+            title: String::new(),
+            summary: String::new(),
+            narration: String::new(),
+            scene_start: start,
+            scene_count: count,
+        };
+        let durations = [4.0, 6.0, 5.0, 5.0];
+        let w = chapter_windows(&[ch(0, 2), ch(2, 2)], &durations);
+        assert_eq!(w, vec![(0.0, 10.0), (10.0, 20.0)]);
+        // An empty chapter list yields no windows.
+        assert!(chapter_windows(&[], &durations).is_empty());
+    }
+
+    /// Chunked (youtube-format) render-path smoke test: 2 chapters × 2 synthetic 1920x1080
+    /// stills over a 12s tone — exercises per-segment rendering, caption re-basing, the audio
+    /// mix pass, and the stream-copy concat. NO network/API calls; requires ffmpeg. Run with:
+    ///   cargo test youtube_render_smoke -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn youtube_render_smoke() {
+        use crate::model::Chapter;
+        let dir = std::env::temp_dir().join("reelmaestro_youtube_render_smoke");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Four synthetic landscape stills.
+        let colors = [
+            [180u8, 60, 60],
+            [60, 140, 180],
+            [80, 170, 90],
+            [170, 150, 60],
+        ];
+        let mut images = Vec::new();
+        for (i, c) in colors.iter().enumerate() {
+            let img = image::RgbImage::from_pixel(1920, 1080, image::Rgb(*c));
+            let p = dir.join(format!("scene-{i:02}.jpg"));
+            img.save(&p).unwrap();
+            images.push(p);
+        }
+
+        // A 12-second tone as stand-in narration audio.
+        let audio = dir.join("audio.mp3");
+        let ok = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=12",
+            ])
+            .arg(&audio)
+            .status()
+            .expect("ffmpeg must be installed to run this test");
+        assert!(ok.success(), "failed to synthesize test audio");
+
+        // Four scenes of three words each, timed evenly across the 12s.
+        let sc = |line: &str| Scene {
+            line: line.into(),
+            image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: String::new(),
+            motion_prompt: String::new(),
+        };
+        let scenes = vec![
+            sc("one two three"),
+            sc("four five six"),
+            sc("seven eight nine"),
+            sc("ten eleven twelve"),
+        ];
+        let labels = [
+            "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            "eleven", "twelve",
+        ];
+        let words: Vec<WordTiming> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, w)| WordTiming {
+                word: w.to_string(),
+                start_s: i as f64,
+                end_s: i as f64 + 1.0,
+            })
+            .collect();
+
+        // Two chapters of two scenes each.
+        let chapters = vec![
+            Chapter {
+                title: "Opening".into(),
+                summary: String::new(),
+                narration: "one two three four five six".into(),
+                scene_start: 0,
+                scene_count: 2,
+            },
+            Chapter {
+                title: "Payoff".into(),
+                summary: String::new(),
+                narration: "seven eight nine ten eleven twelve".into(),
+                scene_start: 2,
+                scene_count: 2,
+            },
+        ];
+
+        let no_clips = vec![None; images.len()];
+        let reel = build(BuildOptions {
+            dir: &dir,
+            scenes: &scenes,
+            images: &images,
+            clips: &no_clips,
+            words: &words,
+            audio: &audio,
+            music: None,
+            duck: true,
+            music_volume: 0.5,
+            captions_on: true,
+            dissolve: false,
+            dissolve_seconds: 0.5,
+            grade: false,
+            canvas: crate::config::canvas(crate::config::Format::Youtube),
+            caption_style: CaptionStyle::for_format(crate::config::Format::Youtube),
+            chapters: &chapters,
+            watermark: None,
+        })
+        .unwrap();
+        assert!(reel.exists(), "reel.mp4 was not produced");
+
+        // The chunked path leaves its per-chapter intermediates behind.
+        assert!(dir.join("segment-00.mp4").exists());
+        assert!(dir.join("segment-01.mp4").exists());
+        assert!(dir.join("segment-00.ass").exists());
+        assert!(dir.join("mix.m4a").exists());
+
+        // Verify the output is a real ~12s 1920x1080 video.
+        let dur = ffmpeg::duration_s(&reel).unwrap();
+        assert!((dur - 12.0).abs() < 1.0, "unexpected duration: {dur}");
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&reel)
+            .output()
+            .unwrap();
+        let dims = String::from_utf8_lossy(&probe.stdout);
+        assert!(
+            dims.trim().starts_with("1920,1080"),
+            "unexpected dims: {dims}"
+        );
+        println!(
+            "youtube_render_smoke OK -> {} ({dur:.1}s, {})",
             reel.display(),
             dims.trim()
         );
@@ -564,6 +864,10 @@ mod tests {
             dissolve: true,
             dissolve_seconds: 0.5,
             grade: true, // also exercises the grade/grain/vignette + exposure-match graph
+            canvas: crate::config::canvas(crate::config::Format::Reel),
+            caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
+            chapters: &[],
+            watermark: None,
         })
         .unwrap();
         assert!(reel.exists(), "reel.mp4 was not produced");
@@ -633,6 +937,7 @@ mod tests {
             cast_ids: Vec::new(),
             location_id: String::new(),
             transition: String::new(),
+            motion_prompt: String::new(),
         }];
         let words: Vec<WordTiming> = (0..6)
             .map(|i| WordTiming {
@@ -657,6 +962,10 @@ mod tests {
                 dissolve: false,
                 dissolve_seconds: 0.5,
                 grade: false,
+                canvas: crate::config::canvas(crate::config::Format::Reel),
+                caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
+                chapters: &[],
+                watermark: None,
             })
             .unwrap();
             assert!(reel.exists());
@@ -750,6 +1059,7 @@ mod tests {
                 cast_ids: Vec::new(),
                 location_id: String::new(),
                 transition: String::new(),
+                motion_prompt: String::new(),
             },
             Scene {
                 line: "five six seven eight".into(),
@@ -757,6 +1067,7 @@ mod tests {
                 cast_ids: Vec::new(),
                 location_id: String::new(),
                 transition: String::new(),
+                motion_prompt: String::new(),
             },
         ];
         let words: Vec<WordTiming> = (0..8)
@@ -783,6 +1094,10 @@ mod tests {
             dissolve: false,
             dissolve_seconds: 0.5,
             grade: false,
+            canvas: crate::config::canvas(crate::config::Format::Reel),
+            caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
+            chapters: &[],
+            watermark: None,
         })
         .unwrap();
         assert!(reel.exists());
@@ -832,6 +1147,7 @@ mod tests {
             cast_ids: Vec::new(),
             location_id: String::new(),
             transition: String::new(),
+            motion_prompt: String::new(),
         }];
         // No words, captions disabled.
         let reel = build(BuildOptions {
@@ -848,6 +1164,10 @@ mod tests {
             dissolve: false,
             dissolve_seconds: 0.5,
             grade: false,
+            canvas: crate::config::canvas(crate::config::Format::Reel),
+            caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
+            chapters: &[],
+            watermark: None,
         })
         .unwrap();
         assert!(reel.exists());
@@ -898,6 +1218,7 @@ mod tests {
             cast_ids: Vec::new(),
             location_id: String::new(),
             transition: String::new(),
+            motion_prompt: String::new(),
         }];
         let images = vec![dir.join("scene-00.jpg")]; // unused (clip wins)
         let reel = build(BuildOptions {
@@ -914,6 +1235,10 @@ mod tests {
             dissolve: false,
             dissolve_seconds: 0.5,
             grade: false,
+            canvas: crate::config::canvas(crate::config::Format::Reel),
+            caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
+            chapters: &[],
+            watermark: None,
         })
         .unwrap();
 
@@ -962,6 +1287,7 @@ mod tests {
             cast_ids: Vec::new(),
             location_id: String::new(),
             transition: String::new(),
+            motion_prompt: String::new(),
         }];
         let reel = build(BuildOptions {
             dir: &dir,
@@ -977,6 +1303,10 @@ mod tests {
             dissolve: false,
             dissolve_seconds: 0.5,
             grade: false,
+            canvas: crate::config::canvas(crate::config::Format::Reel),
+            caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
+            chapters: &[],
+            watermark: None,
         })
         .unwrap();
 

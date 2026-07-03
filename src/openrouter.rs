@@ -37,11 +37,17 @@ pub struct OpenRouter {
     http: reqwest::Client,
     api_key: String,
     pub text_model: String,
+    /// Multimodal model for the consistency QA judge. Separate from `text_model` because judging
+    /// is an image-heavy, constrained scoring task a much cheaper vision model handles well.
+    pub judge_model: String,
     pub image_model: String,
     pub tts_model: String,
     pub music_model: String,
     pub video_model: String,
     pub voice: String,
+    /// Aspect-ratio string for every image/video generation this run ("9:16" or "16:9"),
+    /// resolved from the output format's canvas.
+    pub aspect: String,
 }
 
 impl OpenRouter {
@@ -56,11 +62,13 @@ impl OpenRouter {
             http,
             api_key: cfg.api_key.clone(),
             text_model: cfg.text_model.clone(),
+            judge_model: cfg.judge_model.clone(),
             image_model: cfg.image_model.clone(),
             tts_model: cfg.tts_model.clone(),
             music_model: cfg.music_model.clone(),
             video_model: cfg.video_model.clone(),
             voice: cfg.voice.clone().unwrap_or_else(|| "Kore".to_string()),
+            aspect: crate::config::canvas(cfg.format).aspect_str().to_string(),
         })
     }
 
@@ -79,7 +87,9 @@ impl OpenRouter {
     }
 
     /// Structured chat completion. The model is forced to return JSON matching `schema`,
-    /// which we then parse into `T`.
+    /// which we then parse into `T`. Retried a few times with backoff — this single call is the
+    /// whole run's foundation (the script), so a transient API hiccup or parse failure shouldn't
+    /// abort everything when every downstream stage already retries.
     pub async fn chat_json<T: DeserializeOwned>(
         &self,
         system: &str,
@@ -87,6 +97,7 @@ impl OpenRouter {
         schema_name: &str,
         schema: Value,
     ) -> Result<T> {
+        const ATTEMPTS: usize = 3;
         let body = json!({
             "model": self.text_model,
             "messages": [
@@ -98,7 +109,29 @@ impl OpenRouter {
                 "json_schema": { "name": schema_name, "strict": true, "schema": schema }
             }
         });
-        let v = json_or_err(self.post("/chat/completions").json(&body).send().await?).await?;
+        let mut last_err = anyhow!("chat_json made no attempts");
+        for attempt in 1..=ATTEMPTS {
+            match self.chat_json_once(&body).await {
+                Ok(t) => return Ok(t),
+                Err(e) => {
+                    if attempt < ATTEMPTS {
+                        eprintln!(
+                            "  structured chat failed ({e:#}); retrying ({}/{ATTEMPTS})",
+                            attempt + 1
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
+                            .await;
+                    }
+                    last_err = e;
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    /// One structured-chat attempt: request, surface non-2xx, extract the message text, parse.
+    async fn chat_json_once<T: DeserializeOwned>(&self, body: &Value) -> Result<T> {
+        let v = json_or_err(self.post("/chat/completions").json(body).send().await?).await?;
         let content =
             message_text(&v).ok_or_else(|| anyhow!("no message content in chat response: {v}"))?;
         serde_json::from_str(&content).with_context(|| {
@@ -106,9 +139,10 @@ impl OpenRouter {
         })
     }
 
-    /// Multimodal structured judgement: send `instruction` plus labeled images to the text model
-    /// (which is multimodal) and parse its JSON reply against `schema` into `T`. Each image is
-    /// preceded by its label, like `image_content`. Used by the consistency QA pass.
+    /// Multimodal structured judgement: send `instruction` plus labeled images to the judge model
+    /// (multimodal) and parse its JSON reply against `schema` into `T`. Each image is preceded by
+    /// its label, like `image_content`. Used by the consistency QA pass. Retried once so a single
+    /// transient failure doesn't silently degrade a whole run to unvalidated frames.
     pub async fn judge_json<T: DeserializeOwned>(
         &self,
         system: &str,
@@ -117,13 +151,14 @@ impl OpenRouter {
         schema_name: &str,
         schema: Value,
     ) -> Result<T> {
+        const ATTEMPTS: usize = 2;
         let mut content = vec![json!({ "type": "text", "text": instruction })];
         for (label, url) in images {
             content.push(json!({ "type": "text", "text": label }));
             content.push(json!({ "type": "image_url", "image_url": { "url": url } }));
         }
         let body = json!({
-            "model": self.text_model,
+            "model": self.judge_model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": content},
@@ -133,7 +168,25 @@ impl OpenRouter {
                 "json_schema": { "name": schema_name, "strict": true, "schema": schema }
             }
         });
-        let v = json_or_err(self.post("/chat/completions").json(&body).send().await?).await?;
+        let mut last_err = anyhow!("judge_json made no attempts");
+        for attempt in 1..=ATTEMPTS {
+            match self.judge_json_once(&body).await {
+                Ok(t) => return Ok(t),
+                Err(e) => {
+                    if attempt < ATTEMPTS {
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
+                            .await;
+                    }
+                    last_err = e;
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    /// One judge attempt: request, surface non-2xx, extract the message text, parse.
+    async fn judge_json_once<T: DeserializeOwned>(&self, body: &Value) -> Result<T> {
+        let v = json_or_err(self.post("/chat/completions").json(body).send().await?).await?;
         let reply =
             message_text(&v).ok_or_else(|| anyhow!("no message content in judge response: {v}"))?;
         serde_json::from_str(&reply)
@@ -152,6 +205,10 @@ impl OpenRouter {
             "model": self.image_model,
             "messages": [{"role": "user", "content": image_content(prompt, references)}],
             "modalities": ["image", "text"],
+            // Ask for the run's ratio explicitly (supported for Gemini image models). The
+            // prompt also demands the same framing and `crop_to_aspect` remains the safety
+            // net, so a provider that ignores this field just gets prompt-plus-crop behavior.
+            "image_config": { "aspect_ratio": self.aspect },
         });
         let v = json_or_err(self.post("/chat/completions").json(&body).send().await?).await?;
         let msg = &v["choices"][0]["message"];
@@ -317,31 +374,34 @@ impl OpenRouter {
 
     /// Image-to-video (or text-to-video) via the async video jobs API: submit, poll until
     /// the job completes, then download the MP4. `first_frame` is a base64 data URL used as
-    /// the first frame; pass `None` for pure text-to-video. Retries once as text-to-video
-    /// if an image-conditioned submit fails, and retries a *terminally-failed* job once (Veo's
-    /// safety filter is often non-deterministic, so a re-roll frequently succeeds).
+    /// the first frame; pass `None` for pure text-to-video. `reference_urls` are character
+    /// reference images (Veo "ingredients") used ONLY on the text-to-video fallback, where the
+    /// rejected first frame would otherwise leave identities unanchored. `negative_prompt` rides
+    /// the provider passthrough; if a submit with it fails we retry once without it (per-model
+    /// passthrough support varies). Retries a *terminally-failed* job once (Veo's safety filter
+    /// is often non-deterministic, so a re-roll frequently succeeds).
     pub async fn generate_video(
         &self,
         prompt: &str,
         first_frame: Option<&str>,
+        reference_urls: &[String],
         duration: u32,
         resolution: &str,
+        negative_prompt: Option<&str>,
     ) -> Result<Vec<u8>> {
         const ATTEMPTS: usize = 2;
         let mut last_err = String::new();
         for attempt in 1..=ATTEMPTS {
-            let polling_url = match self
-                .submit_video(prompt, first_frame, duration, resolution)
-                .await
-            {
-                Ok(url) => url,
-                Err(e) if first_frame.is_some() => {
-                    eprintln!("    image-to-video submit failed ({e}); retrying as text-to-video");
-                    self.submit_video(prompt, None, duration, resolution)
-                        .await?
-                }
-                Err(e) => return Err(e),
-            };
+            let polling_url = self
+                .submit_with_fallbacks(
+                    prompt,
+                    first_frame,
+                    reference_urls,
+                    duration,
+                    resolution,
+                    negative_prompt,
+                )
+                .await?;
 
             // Poll until done. Jobs take ~30s–several minutes; cap at ~10 minutes.
             let max_polls = 30;
@@ -382,31 +442,80 @@ impl OpenRouter {
         bail!("video job failed: {last_err}")
     }
 
-    /// Submit one video job and return the URL to poll for its result. Always requests a
-    /// vertical 9:16 clip with no model-generated audio (we mix our own narration/music later).
+    /// Submit a video job, degrading gracefully through the optional request features:
+    /// 1. the full request;
+    /// 2. without the `negativePrompt` passthrough (per-model passthrough support varies, so a
+    ///    rejection here shouldn't kill the clip);
+    /// 3. as text-to-video anchored by the character reference "ingredients" (when the first
+    ///    frame itself was rejected — e.g. Veo's person/face filter — identity would otherwise
+    ///    be lost entirely).
+    async fn submit_with_fallbacks(
+        &self,
+        prompt: &str,
+        first_frame: Option<&str>,
+        reference_urls: &[String],
+        duration: u32,
+        resolution: &str,
+        negative_prompt: Option<&str>,
+    ) -> Result<String> {
+        let mut submit = self
+            .submit_video(
+                prompt,
+                first_frame,
+                &[],
+                duration,
+                resolution,
+                negative_prompt,
+            )
+            .await;
+        if let Err(e) = &submit {
+            if negative_prompt.is_some() {
+                eprintln!("    video submit failed ({e}); retrying without negative prompt");
+                submit = self
+                    .submit_video(prompt, first_frame, &[], duration, resolution, None)
+                    .await;
+            }
+        }
+        match submit {
+            Ok(url) => Ok(url),
+            Err(e) if first_frame.is_some() => {
+                eprintln!("    image-to-video submit failed ({e}); retrying as text-to-video");
+                self.submit_video(
+                    prompt,
+                    None,
+                    reference_urls,
+                    duration,
+                    resolution,
+                    negative_prompt,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Submit one video job and return the URL to poll for its result. Requests a clip in the
+    /// run's aspect ratio with no model-generated audio (we mix our own narration/music later).
     /// When `first_frame` is set it's attached as the clip's first frame for image-to-video.
     async fn submit_video(
         &self,
         prompt: &str,
         first_frame: Option<&str>,
+        reference_urls: &[String],
         duration: u32,
         resolution: &str,
+        negative_prompt: Option<&str>,
     ) -> Result<String> {
-        let mut body = json!({
-            "model": self.video_model,
-            "prompt": prompt,
-            "aspect_ratio": "9:16",
-            "resolution": resolution,
-            "duration": duration,
-            "generate_audio": false,
-        });
-        if let Some(url) = first_frame {
-            body["frame_images"] = json!([{
-                "type": "image_url",
-                "image_url": { "url": url },
-                "frame_type": "first_frame",
-            }]);
-        }
+        let body = video_request_body(
+            &self.video_model,
+            prompt,
+            &self.aspect,
+            first_frame,
+            reference_urls,
+            duration,
+            resolution,
+            negative_prompt,
+        );
         let v = json_or_err(self.post("/videos").json(&body).send().await?).await?;
         // Prefer an absolute polling_url; fall back to constructing one from the job id.
         if let Some(url) = v["polling_url"].as_str() {
@@ -464,6 +573,66 @@ impl OpenRouter {
         }
         Ok(resp.bytes().await?.to_vec())
     }
+}
+
+/// Sleep (seconds) before retry `attempt + 1` of a structured chat/judge call: 2s after the
+/// first failure, 5s after any later one. Pure so the schedule is unit-testable.
+fn backoff_secs(attempt: usize) -> u64 {
+    if attempt <= 1 {
+        2
+    } else {
+        5
+    }
+}
+
+/// Build the JSON body for one video-job submit. Pure (no I/O) so field presence is
+/// unit-testable: optional fields are serialized only when set, so a provider that rejects one
+/// never sees it on the fallback resubmits.
+// Mirrors submit_video's surface; a params struct would just rename the same eight fields.
+#[allow(clippy::too_many_arguments)]
+fn video_request_body(
+    model: &str,
+    prompt: &str,
+    aspect: &str,
+    first_frame: Option<&str>,
+    reference_urls: &[String],
+    duration: u32,
+    resolution: &str,
+    negative_prompt: Option<&str>,
+) -> Value {
+    let mut body = json!({
+        "model": model,
+        "prompt": prompt,
+        "aspect_ratio": aspect,
+        "resolution": resolution,
+        "duration": duration,
+        "generate_audio": false,
+    });
+    if let Some(url) = first_frame {
+        body["frame_images"] = json!([{
+            "type": "image_url",
+            "image_url": { "url": url },
+            "frame_type": "first_frame",
+        }]);
+    }
+    // Veo "ingredients": identity anchors for text-to-video. Veo 3.1 accepts at most 3
+    // reference images, so cap defensively rather than let a large cast fail the submit.
+    if !reference_urls.is_empty() {
+        let refs: Vec<Value> = reference_urls
+            .iter()
+            .take(3)
+            .map(|u| json!({ "type": "image_url", "image_url": { "url": u } }))
+            .collect();
+        body["input_references"] = json!(refs);
+    }
+    // OpenRouter exposes Veo's negativePrompt only through provider passthrough, not as a
+    // top-level field.
+    if let Some(neg) = negative_prompt {
+        body["provider"] = json!({
+            "options": { "google-vertex": { "parameters": { "negativePrompt": neg } } }
+        });
+    }
+    body
 }
 
 /// The outcome of a single video-job poll: still running, finished (with the content URL to
@@ -656,6 +825,100 @@ mod tests {
     fn image_content_no_refs_is_plain_string() {
         let c = image_content("a cat", &[]);
         assert_eq!(c, json!("a cat"));
+    }
+
+    #[test]
+    fn backoff_grows_then_plateaus() {
+        assert_eq!(backoff_secs(1), 2);
+        assert_eq!(backoff_secs(2), 5);
+        assert_eq!(backoff_secs(3), 5);
+    }
+
+    #[test]
+    fn video_body_serializes_optional_fields_only_when_set() {
+        // Bare text-to-video: no frame, no references, no provider passthrough.
+        let b = video_request_body(
+            "google/veo-3.1-lite",
+            "a dog",
+            "9:16",
+            None,
+            &[],
+            6,
+            "720p",
+            None,
+        );
+        assert_eq!(b["model"], "google/veo-3.1-lite");
+        assert_eq!(b["aspect_ratio"], "9:16");
+        assert_eq!(b["duration"], 6);
+        assert_eq!(b["generate_audio"], false);
+        assert!(b.get("frame_images").is_none());
+        assert!(b.get("input_references").is_none());
+        assert!(b.get("provider").is_none());
+
+        // The run's aspect flows through (long-form is landscape).
+        let b = video_request_body(
+            "alibaba/wan-2.6",
+            "a dog",
+            "16:9",
+            None,
+            &[],
+            12,
+            "720p",
+            None,
+        );
+        assert_eq!(b["aspect_ratio"], "16:9");
+
+        // Image-to-video keeps the exact frame_images shape.
+        let b = video_request_body(
+            "google/veo-3.1-lite",
+            "a dog",
+            "9:16",
+            Some("data:image/jpeg;base64,AAAA"),
+            &[],
+            4,
+            "720p",
+            None,
+        );
+        assert_eq!(b["frame_images"][0]["frame_type"], "first_frame");
+        assert_eq!(
+            b["frame_images"][0]["image_url"]["url"],
+            "data:image/jpeg;base64,AAAA"
+        );
+
+        // Negative prompt rides the google-vertex passthrough only.
+        let b = video_request_body(
+            "google/veo-3.1-lite",
+            "a dog",
+            "9:16",
+            None,
+            &[],
+            4,
+            "720p",
+            Some("text, watermark"),
+        );
+        assert_eq!(
+            b["provider"]["options"]["google-vertex"]["parameters"]["negativePrompt"],
+            "text, watermark"
+        );
+    }
+
+    #[test]
+    fn video_body_caps_reference_ingredients_at_three() {
+        let refs: Vec<String> = (0..5).map(|i| format!("url{i}")).collect();
+        let b = video_request_body(
+            "google/veo-3.1-lite",
+            "a dog",
+            "9:16",
+            None,
+            &refs,
+            4,
+            "720p",
+            None,
+        );
+        let sent = b["input_references"].as_array().unwrap();
+        assert_eq!(sent.len(), 3, "Veo 3.1 accepts at most 3 reference images");
+        assert_eq!(sent[0]["image_url"]["url"], "url0");
+        assert_eq!(sent[2]["image_url"]["url"], "url2");
     }
 
     #[test]
