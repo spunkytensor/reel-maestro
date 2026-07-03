@@ -714,7 +714,10 @@ async fn synthesize_per_chapter(
     let _ = std::fs::remove_file(&scratch);
     // Concat into the exact file the caller named as `audio` (and that `transcribe` reads below),
     // deriving the name from the path rather than hardcoding it so the two can't drift apart.
-    let audio_name = audio.file_name().and_then(|n| n.to_str()).unwrap_or("audio.mp3");
+    let audio_name = audio
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("audio.mp3");
     ffmpeg::concat_audio(dir, &parts, audio_name)?;
     // One whisper pass over the joined track gives the timeline-global word timings.
     println!(
