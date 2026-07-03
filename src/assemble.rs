@@ -150,7 +150,7 @@ fn build_single_pass(
 
     let basename = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
     let audio_name = basename(opts.audio);
-    let music_name = opts.music.map(basename);
+    let music_name = music_arg(opts.music);
     // The watermark is an arbitrary user path (not in `dir`), so pass it whole — ffmpeg reads it
     // as a plain `-i` input argument, not inside the filtergraph.
     let watermark = opts.watermark.map(|p| p.to_string_lossy().into_owned());
@@ -175,6 +175,21 @@ fn build_single_pass(
     Ok(opts.dir.join(output))
 }
 
+/// Resolve a soundtrack path into an ffmpeg `-i` argument. The render runs with the run folder as
+/// its working directory, so a bare file name only resolves for music that lives in `dir`
+/// (generated or resumed tracks). A user's `--music` file can sit anywhere, so canonicalize to an
+/// absolute path — openable regardless of ffmpeg's cwd — instead of stripping it to a bare name
+/// ffmpeg would look for inside `dir` and fail to find. Falls back to the raw path if the file
+/// can't be canonicalized (it's about to be handed to ffmpeg, which will surface any real error).
+fn music_arg(music: Option<&Path>) -> Option<String> {
+    music.map(|p| {
+        std::fs::canonicalize(p)
+            .unwrap_or_else(|_| p.to_path_buf())
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
 /// Chapter-chunked render: each chapter becomes a video-only `segment-NN.mp4` (identical encode
 /// params), the narration+music mix is built once as `mix.m4a`, and the final file is a
 /// stream-copy concat + mux. Chapter boundaries are always hard cuts.
@@ -192,7 +207,12 @@ fn build_chunked(
     let watermark = opts.watermark.map(|p| p.to_string_lossy().into_owned());
 
     for (c, (chapter, &(start, end))) in opts.chapters.iter().zip(&windows).enumerate() {
-        let range = chapter.scene_start..(chapter.scene_start + chapter.scene_count);
+        // `scene_start`/`scene_count` come from the model's chaptered outline (JSON), so guard the
+        // sum against overflow rather than letting a corrupt value panic (debug) or wrap (release).
+        let Some(range_end) = chapter.scene_start.checked_add(chapter.scene_count) else {
+            bail!("chapter {c} scene range overflows");
+        };
+        let range = chapter.scene_start..range_end;
         if range.end > media.len() {
             bail!(
                 "chapter {c} scene range {range:?} exceeds the {} scenes present",
@@ -213,7 +233,9 @@ fn build_chunked(
         };
         // Intra-chapter junctions only: dissolves[j] sits between scene j and j+1, so a
         // chapter spanning scenes [s, s+k) owns junctions [s, s+k-1).
-        let seg_dissolves = &dissolves[range.start..(range.end - 1).max(range.start)];
+        // `saturating_sub` guards the empty-chapter case (`range.end == 0`): plain `range.end - 1`
+        // would underflow `usize` and panic/wrap. `.max(range.start)` keeps the slice non-inverted.
+        let seg_dissolves = &dissolves[range.start..range.end.saturating_sub(1).max(range.start)];
 
         let seg_name = format!("segment-{c:02}.mp4");
         println!(
@@ -246,7 +268,7 @@ fn build_chunked(
     ffmpeg::mix_audio(
         opts.dir,
         &basename(opts.audio),
-        opts.music.map(basename).as_deref(),
+        music_arg(opts.music).as_deref(),
         opts.duck,
         opts.music_volume,
         total,
