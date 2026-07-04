@@ -255,7 +255,7 @@ async fn render_scene(
     } else {
         1
     };
-    let mut best: Option<(RgbImage, i64)> = None;
+    let mut best: Option<(RgbImage, bool, i64)> = None;
     let mut rerolled = false;
     for attempt in 1..=max_attempts {
         let Some(img) = generate_one(
@@ -274,23 +274,27 @@ async fn render_scene(
             continue;
         };
         if !validate {
-            best = Some((img, 0));
+            best = Some((img, true, 0));
             break;
         }
         let Some(url) = jpeg_data_url(&img) else {
             // Can't encode this candidate to judge it — fall back to it only if we have nothing
             // better already in hand (never clobber a previously judged, higher-scoring candidate).
             if best.is_none() {
-                best = Some((img, 0));
+                best = Some((img, false, 0));
             }
             break;
         };
         match judge_scene(ctx.or, &url, &people, location, &references, &label).await {
             Some(v) => {
-                if best.as_ref().map(|(_, s)| v.score > *s).unwrap_or(true) {
-                    best = Some((img, v.score));
+                if best
+                    .as_ref()
+                    .map(|(_, consistent, s)| (v.consistent, v.score) > (*consistent, *s))
+                    .unwrap_or(true)
+                {
+                    best = Some((img, v.consistent, v.score));
                 }
-                let best_score = best.as_ref().map(|(_, s)| *s).unwrap_or(0);
+                let best_score = best.as_ref().map(|(_, _, s)| *s).unwrap_or(0);
                 if v.consistent {
                     break; // clean — stop spending
                 }
@@ -319,7 +323,7 @@ async fn render_scene(
                 // Judge unavailable (non-fatal) — keep this candidate only if we have nothing
                 // better, then stop re-rolling (no point paying while the judge is down).
                 if best.is_none() {
-                    best = Some((img, 0));
+                    best = Some((img, false, 0));
                 }
                 break;
             }
@@ -327,7 +331,7 @@ async fn render_scene(
     }
 
     let (img, kept_score) = match best {
-        Some((im, s)) => (im, Some(s)),
+        Some((im, _, s)) => (im, Some(s)),
         None => {
             eprintln!("  {label}: image generation failed after retries; using placeholder");
             (placeholder(i, ctx.canvas), None)
@@ -652,7 +656,11 @@ async fn build_character_ref(
 ) -> Option<Vec<String>> {
     if let Some(p) = photo {
         return match std::fs::read(p) {
-            Ok(bytes) => Some(vec![openrouter::data_url_from_image(&bytes)]),
+            Ok(bytes) => {
+                let path = dir.join(format!("character-{}.jpg", slug(&entity.id)));
+                let _ = std::fs::copy(p, &path);
+                Some(vec![openrouter::data_url_from_image(&bytes)])
+            }
             Err(e) => {
                 eprintln!(
                     "  note: could not read --character-ref {}: {e}",
@@ -734,12 +742,17 @@ async fn build_location_ref(
         "  building location reference \"{}\": {}",
         entity.id, entity.description
     );
+    let aspect = if canvas.w > canvas.h {
+        "Landscape 16:9"
+    } else {
+        "Vertical 9:16"
+    };
     let prompt = format!(
         "A clear establishing photograph of this location with NO people in frame, with the \
          location's main repeated furniture/setting (e.g. a representative two-person table) shown \
          clearly in the foreground. Render every repeated element identically and EXACTLY as \
          described — same surfaces, same settings, same props — so the image is an internally \
-         consistent, unambiguous reference: {}. Vertical 9:16, sharp focus, cinematic lighting.",
+         consistent, unambiguous reference: {}. {aspect}, sharp focus, cinematic lighting.",
         entity.description
     );
     let img = generate_one(

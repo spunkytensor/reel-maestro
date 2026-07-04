@@ -22,7 +22,7 @@ mod video;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{ArgGroup, Parser, ValueEnum};
 
 use config::Config;
 use openrouter::OpenRouter;
@@ -30,13 +30,14 @@ use openrouter::OpenRouter;
 /// Generate a vertical short video from a topic, an article URL, or your own script.
 #[derive(Parser, Debug)]
 #[command(name = "reelmaestro", version, about)]
+#[command(group(ArgGroup::new("input").args(["topic", "brief", "script", "url", "from"]).required(true)))]
 pub struct Cli {
     /// A topic/idea; the AI writes the whole script.
-    #[arg(long, conflicts_with_all = ["script", "url"])]
+    #[arg(long, conflicts_with_all = ["brief", "script", "url", "from"])]
     topic: Option<String>,
 
     /// Path to a text file containing your finished narration (used verbatim).
-    #[arg(long, conflicts_with_all = ["topic", "url"])]
+    #[arg(long, conflicts_with_all = ["topic", "brief", "url", "from"])]
     script: Option<PathBuf>,
 
     /// Path to a text file of notes/brief the AI writes a script FROM (unlike --script,
@@ -45,12 +46,12 @@ pub struct Cli {
     brief: Option<PathBuf>,
 
     /// An article URL; the AI extracts the gist and writes a script.
-    #[arg(long, conflicts_with_all = ["topic", "script"])]
+    #[arg(long, conflicts_with_all = ["topic", "brief", "script", "from"])]
     url: Option<String>,
 
     /// Resume a previous run folder: reuse its script, audio, captions, and images, and only
     /// re-render. Pair with --video to upgrade an image preview to video without regenerating.
-    #[arg(long, conflicts_with_all = ["topic", "script", "url"])]
+    #[arg(long, conflicts_with_all = ["topic", "brief", "script", "url", "out", "no_images"])]
     from: Option<PathBuf>,
 
     /// Output directory (a per-video subfolder is created inside it).
@@ -66,10 +67,10 @@ pub struct Cli {
     speed: f64,
 
     /// AI-generate a background soundtrack (OpenRouter music model, ~$0.08).
-    #[arg(long)]
+    #[arg(long, conflicts_with = "music")]
     music_gen: bool,
 
-    /// Use this audio file as the background soundtrack (overrides --music-gen).
+    /// Use this audio file as the background soundtrack.
     #[arg(long)]
     music: Option<PathBuf>,
 
@@ -97,7 +98,7 @@ pub struct Cli {
 
     /// Video clip resolution (720p or 1080p). Default comes from the quality tier (720p except
     /// --quality premium).
-    #[arg(long)]
+    #[arg(long, value_parser = parse_video_resolution)]
     video_resolution: Option<String>,
 
     /// Don't burn captions into the video.
@@ -167,12 +168,16 @@ pub struct Cli {
     #[arg(long)]
     watermark: Option<PathBuf>,
 
+    /// OpenRouter text/script model ID (default from --quality or REELMAESTRO_TEXT_MODEL).
     #[arg(long)]
     text_model: Option<String>,
+    /// OpenRouter image model ID (default from --quality or REELMAESTRO_IMAGE_MODEL).
     #[arg(long)]
     image_model: Option<String>,
+    /// OpenRouter text-to-speech model ID (default from REELMAESTRO_TTS_MODEL).
     #[arg(long)]
     tts_model: Option<String>,
+    /// OpenRouter music model ID for --music-gen (default from REELMAESTRO_MUSIC_MODEL).
     #[arg(long)]
     music_model: Option<String>,
     /// Multimodal model for the scene-consistency judge (cheaper than the script model).
@@ -185,6 +190,7 @@ pub struct Cli {
     /// Whisper model for local word timing (e.g. `base`, `small`, `large-v3`).
     #[arg(long)]
     whisper_model: Option<String>,
+    /// OpenRouter image-to-video model ID (default from --quality/format or REELMAESTRO_VIDEO_MODEL).
     #[arg(long)]
     video_model: Option<String>,
 }
@@ -198,6 +204,13 @@ pub(crate) fn parse_validate_scene(s: &str) -> Result<usize, String> {
         "2" => Ok(2),
         "3" => Ok(3),
         _ => Err(format!("expected `off`, `2`, or `3` (got {s:?})")),
+    }
+}
+
+pub(crate) fn parse_video_resolution(s: &str) -> Result<String, String> {
+    match s.trim() {
+        "720p" | "1080p" => Ok(s.trim().to_string()),
+        other => Err(format!("expected `720p` or `1080p` (got {other:?})")),
     }
 }
 
@@ -223,11 +236,21 @@ async fn main() -> Result<()> {
 async fn run(cli: &Cli) -> Result<()> {
     // ffmpeg's atempo filter only accepts 0.5–2.0; reject out-of-range speeds
     // upfront so the user gets a clear message instead of a cryptic ffmpeg error.
-    // (music_volume needs no check — it's clamped to >= 0 at the ffmpeg call.)
     if !(0.5..=2.0).contains(&cli.speed) {
         bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
     }
-    let cfg = Config::load(cli)?;
+    if !cli.music_volume.is_finite() || cli.music_volume < 0.0 {
+        bail!("--music-volume must be finite and non-negative (got {})", cli.music_volume);
+    }
+    if !cli.dissolve_seconds.is_finite() || cli.dissolve_seconds < 0.0 {
+        bail!(
+            "--dissolve-seconds must be finite and non-negative (got {})",
+            cli.dissolve_seconds
+        );
+    }
+    validate_local_inputs(cli)?;
+    let needs_api = cli.from.is_none() || cli.video || cli.video_scenes.is_some() || cli.music_gen || cli.poster_scene.is_some();
+    let cfg = Config::load(cli, needs_api)?;
     let mut or = OpenRouter::new(&cfg)?;
 
     // Resolve/validate the watermark up front (fail fast, before any generation) into an
@@ -279,9 +302,9 @@ async fn run(cli: &Cli) -> Result<()> {
             let narration = std::fs::read_to_string(path)
                 .with_context(|| format!("could not read script file {}", path.display()))?;
             if yt {
-                script::youtube_from_narration(&or, narration.trim(), cfg.minutes).await?
+                script::youtube_from_narration(&or, &narration, cfg.minutes).await?
             } else {
-                script::from_narration(&or, narration.trim()).await?
+                script::from_narration(&or, &narration).await?
             }
         } else if let Some(url) = &cli.url {
             println!("  fetching {url} ...");
@@ -374,10 +397,13 @@ async fn run(cli: &Cli) -> Result<()> {
         if !audio.exists() {
             bail!("{} has no audio.mp3 to resume from", dir.display());
         }
-        std::fs::read(&words_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        if words_path.exists() {
+            std::fs::read(&words_path)
+                .with_context(|| format!("could not read {}", words_path.display()))
+                .and_then(|b| serde_json::from_slice(&b).context("invalid words.json"))?
+        } else {
+            Vec::new()
+        }
     } else if cfg.no_narration {
         let total = cfg.scene_seconds * script.scenes.len() as f64;
         println!("→ no narration: building silent {total:.1}s timeline ...");
@@ -574,7 +600,7 @@ async fn run(cli: &Cli) -> Result<()> {
     // Generate a purpose-built cover image (clean, no captions). Resume reuses an existing
     // poster so a re-stitch stays free. If generation fails, fall back to a reel frame.
     let poster = dir.join("poster.jpg");
-    if !(resume && poster.exists()) {
+    if !resume || cli.poster_scene.is_some() {
         println!("→ generating poster ({}) ...", or.image_model);
         let refs = poster_refs(&dir);
         let concept = poster_concept(&script, format);
@@ -617,6 +643,62 @@ async fn run(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn validate_local_inputs(cli: &Cli) -> Result<()> {
+    if let Some(path) = &cli.music {
+        validate_media_file(
+            path,
+            "music file",
+            &["mp3", "wav", "ogg", "flac", "m4a", "aac"],
+            100 * 1024 * 1024,
+        )?;
+    }
+    if let Some(path) = &cli.character_ref {
+        validate_media_file(
+            path,
+            "character reference",
+            &["jpg", "jpeg", "png", "webp", "gif"],
+            25 * 1024 * 1024,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_media_file(
+    path: &std::path::Path,
+    label: &str,
+    allowed_exts: &[&str],
+    max_bytes: u64,
+) -> Result<()> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("could not find {label} {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("{label} is not a file: {}", path.display());
+    }
+    if meta.len() == 0 || meta.len() > max_bytes {
+        bail!(
+            "{label} size must be 1..={} bytes (got {}): {}",
+            max_bytes,
+            meta.len(),
+            path.display()
+        );
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !allowed_exts.iter().any(|&allowed| allowed == ext) {
+        bail!(
+            "unsupported {label} extension {:?}; expected one of {}",
+            ext,
+            allowed_exts.join(", ")
+        );
+    }
+    std::fs::File::open(path)
+        .with_context(|| format!("could not read {label} {}", path.display()))?;
+    Ok(())
+}
+
 /// Whisper coverage below this means the TTS take looks truncated — trigger a re-synthesis, and
 /// (for long-form) fall back from a single whole-narration call to per-chapter synthesis.
 const MIN_TTS_COVERAGE: f64 = 0.85;
@@ -638,7 +720,17 @@ async fn synthesize_with_coverage(
     const TTS_ATTEMPTS: usize = 3;
     let mut best: Option<(Vec<model::WordTiming>, f64, Vec<u8>)> = None;
     for attempt in 1..=TTS_ATTEMPTS {
-        tts::synthesize(or, narration, audio_path, speed).await?;
+        if let Err(e) = tts::synthesize(or, narration, audio_path, speed).await {
+            if attempt < TTS_ATTEMPTS {
+                eprintln!(
+                    "  note: TTS request failed ({e}); retrying ({}/{TTS_ATTEMPTS}) ...",
+                    attempt + 1
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+            return Err(e).context("TTS failed after retries");
+        }
         let t = transcribe::word_timings(cfg, audio_path, narration, words_scratch)?;
         println!(
             "  {} words timed (~{:.0}% of the text spoken)",
@@ -819,7 +911,19 @@ async fn resolve_music(
     dir: &std::path::Path,
 ) -> Option<PathBuf> {
     if let Some(file) = &cli.music {
-        return Some(file.clone());
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("audio");
+        let dest = dir.join(format!("music.{ext}"));
+        let same_file = std::fs::canonicalize(file)
+            .ok()
+            .zip(std::fs::canonicalize(&dest).ok())
+            .is_some_and(|(src, dst)| src == dst);
+        if !same_file {
+            if let Err(e) = std::fs::copy(file, &dest) {
+                eprintln!("  note: could not persist soundtrack in run folder ({e}); using original path");
+                return Some(file.clone());
+            }
+        }
+        return Some(dest);
     }
     if !cli.music_gen {
         return None;
@@ -859,7 +963,7 @@ async fn resolve_music(
 
 /// Find a previously generated/supplied soundtrack file in a resumed run folder.
 fn existing_music(dir: &std::path::Path) -> Option<PathBuf> {
-    ["wav", "mp3", "ogg", "flac"]
+    ["wav", "mp3", "ogg", "flac", "m4a", "aac"]
         .iter()
         .map(|e| dir.join(format!("music.{e}")))
         .find(|p| p.exists())

@@ -126,7 +126,7 @@ Set your OpenRouter API key in the environment, or copy `.env.example` to `.env`
 from a clone:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-v1-...
+export OPENROUTER_API_KEY=replace-with-your-real-openrouter-key
 
 # Or, from a checkout:
 cp .env.example .env      # paste OPENROUTER_API_KEY into .env
@@ -216,22 +216,22 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | Flag | Default | Purpose |
 |---|---|---|
 | `--topic` / `--brief` / `--script` / `--url` | — | Input mode (exactly one). `--brief <file>` = AI writes from your notes; `--script <file>` = verbatim narration. |
-| `--from <dir>` | — | Resume a prior run folder: reuse its script/audio/captions/images and just re-render (e.g. add `--video`). |
-| `--out <dir>` | `out` | Output root directory. |
+| `--from <dir>` | — | Resume a prior run folder: reuse its script/audio/captions/images and just re-render (e.g. add `--video`). Plain resumes are local/free and do not require `OPENROUTER_API_KEY`; conflicts with `--out` and `--no-images`. |
+| `--out <dir>` | `out` | Output root directory for fresh runs. |
 | `--voice <name>` | auto | TTS voice (model-dependent). If unset, auto-picked from the script's narrator gender (male → `Puck`, female/neutral → `Kore`). |
 | `--speed <f64>` | `1.0` | Narration tempo (0.5–2.0), pitch-preserving. |
-| `--music-gen` | off | AI-generate a background soundtrack (OpenRouter music model, ~$0.08). |
-| `--music <file>` | — | Use your own audio file as the soundtrack (overrides `--music-gen`). |
+| `--music-gen` | off | AI-generate a background soundtrack (OpenRouter music model, ~$0.08); conflicts with `--music`. |
+| `--music <file>` | — | Use your own audio file as the soundtrack; copied into the run folder as `music.<ext>` so `--from` can reuse it. |
 | `--mix <duck\|low>` | `duck` | How music sits under narration: `duck` = auto-dip under the voice; `low` = constant volume. |
 | `--music-volume <f64>` | `0.6` | Background music gain. Higher = louder; raise toward `1.0`+ for a stronger bed. |
 | `--video` | off | Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video model/resolution (default Veo 3.1 Lite ≈ $0.05/sec at 720p). |
 | `--video-scenes <N>` | — | Render only the first N scenes as video; the rest stay Ken Burns stills (caps cost). |
 | `--video-resolution <res>` | tier (`720p`) | Veo clip resolution (`720p`/`1080p`). Defaults from the quality tier (`1080p` on `premium`). |
 | `--quality <draft\|standard\|premium>` | `standard` | Quality/cost tier presetting the model defaults: `draft` = cheapest models + validation off (~3-5x cheaper); `premium` = Opus script, Veo 3.1 Fast 1080p, deepest validation. Explicit model flags/envs still override. |
-| `--format <reel\|youtube>` | `reel` | Output format. `youtube` = landscape 16:9 long-form with a chaptered script, per-chapter TTS + rendering, a 1280x720 thumbnail, and a `youtube.md` metadata file (title/description/tags/chapter timestamps). |
+| `--format <reel\|youtube>` | `reel` | Output format. `youtube` = landscape 16:9 long-form with a chaptered script, single-call TTS with per-chapter fallback, chunked rendering, a 1280x720 thumbnail, and a `youtube.md` metadata file (title/description/tags/chapter timestamps). |
 | `--minutes <N>` | `3` | Target length in minutes for `--format youtube` (1-12). Drives the narration word budget, scene count, and chapter count (~1/min). |
 | `--character-ref <file>` | — | Use this photo as the recurring character across all scenes (overrides the generated portrait). |
-| `--watermark <file>` | — | Overlay a watermark (PNG with alpha) on the final video, bottom-right, auto-scaled to the format (≈16% of frame width). Works on fresh runs and `--from` resumes. |
+| `--watermark <file>` | — | Overlay a watermark (PNG with alpha) on the final video, bottom-right, auto-scaled to the format (≈6% of frame width). Works on fresh runs and `--from` resumes. |
 | `--no-consistency` | off | Disable automatic character-consistency conditioning. |
 | `--poster-scene <N>` | `0` | Fallback only: which scene's frame to use if custom poster generation fails (0 = hook). |
 | `--no-embed-poster` | off | Write `poster.jpg` but don't embed it as the MP4's cover art. |
@@ -353,10 +353,10 @@ When a person or animal recurs through the story, Reel Maestro keeps them lookin
 **same** individual across every scene (and, with `--video*`, across the video clips too,
 since each clip is seeded from its still).
 
-How it works: the scriptwriter emits a `cast` description (saved in `script.json`). If it's
-non-empty, Reel Maestro generates one **character reference portrait** (`character-ref.jpg`),
-then conditions every scene image on it — the image model preserves the subject's identity while
-changing the setting. This is **automatic**; no flag needed.
+How it works: the scriptwriter emits recurring `characters` and `locations` (saved in
+`script.json`). Reel Maestro generates reference portraits/establishing shots for them, then
+conditions every scene image on the relevant references — the image model preserves identities and
+settings while changing the action. This is **automatic**; no flag needed.
 
 ```bash
 # Recurring subject → same dog in every scene, automatically
@@ -369,10 +369,11 @@ reelmaestro --topic "..." --character-ref ./me.jpg
 reelmaestro --topic "..." --no-consistency
 ```
 
-- Abstract topics with no recurring subject (the `cast` comes back empty) skip this and use
+- Abstract topics with no recurring subject (no recurring `characters`/`locations`) skip this and use
   the faster independent path — nothing to configure.
-- Cost is negligible: one extra portrait image (~$0.004) plus a small reference input per
-  scene. If the portrait fails, it falls back to independent generation (non-fatal).
+- Cost is modest: one reference image per recurring character/location plus small reference inputs
+  per scene. If a reference fails, it falls back to independent generation for that reference
+  (non-fatal).
 - Requires an image model that accepts image input (the default `google/gemini-3-pro-image`
   does).
 
@@ -392,11 +393,12 @@ reelmaestro --from out/20260618_141530_a-fox-and-a-hare-become-friends/ --video
 ```
 
 `--from <dir>` reuses the folder's `script.json`, `audio.mp3`, `words.json`, `scene-NN.jpg`,
-and any soundtrack, so the video matches the preview you approved. A still re-render (no `--video`)
+poster, and any soundtrack, so the video matches the preview you approved. A still re-render (no `--video`)
 writes `reel.mp4`; the **video upgrade writes `reel-video.mp4`**, leaving the still `reel.mp4` intact
 so you keep both versions. You can also use `--from` to just re-stitch (e.g. after tweaking a scene
 image by hand), or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no `--video`
-does a pure local re-assemble (no API calls).
+does a pure local re-assemble (no API calls, no API key required). `--poster-scene` explicitly
+requests a new generated poster on resume and therefore uses OpenRouter.
 
 ## Video scenes (optional, costs real money)
 
@@ -532,11 +534,12 @@ error ⇒ the text model.
 
 ## AI invocations at a glance
 
-Every model call Reel Maestro makes and how each response feeds the final `reel.mp4`. One
-**Text LLM** call plans everything; its fields fan out to the image, speech, music, and video
-models. Solid arrows are data flow; dotted arrows are *conditioning* (an image used to keep a
-subject consistent). Dashed-border nodes are **opt-in** (`--music-gen`, `--video`). Word timing
-runs **locally** (`whisper-timestamped`), not through OpenRouter.
+Every model call Reel Maestro makes and how each response feeds the final `reel.mp4`. Reel mode
+uses one **Text LLM** planning call; YouTube mode uses an outline call plus one call per chapter.
+Those fields fan out to the image, speech, music, and video models. Solid arrows are data flow;
+dotted arrows are *conditioning* (reference images used to keep subjects/settings consistent).
+Dashed-border nodes are **opt-in** (`--music-gen`, `--video`). Word timing runs **locally**
+(`whisper-timestamped`), not through OpenRouter.
 
 ```mermaid
 flowchart TD
@@ -546,20 +549,20 @@ flowchart TD
     textLLM --> scenePrompts["scene image_prompts"]
     textLLM --> posterPrompt["poster_prompt"]
     textLLM --> musicPrompt["music_prompt"]
-    textLLM --> cast["cast description"]
+    textLLM --> canon["characters + locations"]
 
-    %% Character-consistency portrait
-    cast -->|"if non-empty"| charImg["🎨 Image model<br/>character-ref portrait"]
-    charImg --> charRef["character-ref.jpg"]
+    %% Consistency references
+    canon -->|"if recurring"| refImg["🎨 Image model<br/>character/location refs"]
+    refImg --> refs["character-*.jpg<br/>location-*.jpg"]
 
     %% Per-scene images
     scenePrompts --> sceneImg["🎨 Image model · per scene<br/>Gemini 3 Pro Image"]
-    charRef -.->|conditions| sceneImg
+    refs -.->|conditions| sceneImg
     sceneImg --> stills["scene-NN.jpg"]
 
     %% Custom poster
     posterPrompt --> posterImg["🎨 Image model<br/>poster"]
-    charRef -.->|conditions| posterImg
+    refs -.->|conditions| posterImg
     posterImg --> poster["poster.jpg"]
 
     %% Narration audio
@@ -593,8 +596,8 @@ flowchart TD
 
 | Invocation | Model (default) | Produces | Used for |
 |---|---|---|---|
-| Text LLM | `anthropic/claude-sonnet-4-6` | narration, scene prompts, `poster_prompt`, `music_prompt`, `cast` | drives every downstream call |
-| Image · portrait | `google/gemini-3-pro-image` | `character-ref.jpg` | conditions scene + poster images |
+| Text LLM | `anthropic/claude-sonnet-4-6` | narration, scene prompts, `poster_prompt`, `music_prompt`, `characters`, `locations` | drives every downstream call |
+| Image · references | `google/gemini-3-pro-image` | `character-*.jpg`, `location-*.jpg` | conditions scene + poster images |
 | Image · per scene | `google/gemini-3-pro-image` | `scene-NN.jpg` | Ken Burns stills / Veo first frames |
 | Image · poster | `google/gemini-3-pro-image` | `poster.jpg` | embedded MP4 cover art |
 | TTS | `google/gemini-3.1-flash-tts-preview` | `audio.mp3` | narration + master clock |

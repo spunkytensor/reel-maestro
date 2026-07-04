@@ -4,7 +4,14 @@
 //! Minimal article fetch + HTML-to-text for `--url` mode. Deliberately dependency-free:
 //! we only need the gist, which then feeds the scriptwriter.
 
-use anyhow::{Context, Result};
+use std::net::{IpAddr, ToSocketAddrs};
+
+use anyhow::{bail, Context, Result};
+use futures::StreamExt;
+use reqwest::{header, Url};
+
+const MAX_ARTICLE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_REDIRECTS: usize = 5;
 
 /// Fetch `url` and return its main text content as a single, whitespace-collapsed string.
 ///
@@ -17,6 +24,8 @@ pub async fn fetch_article(url: &str) -> Result<String> {
     // requests without a browser-like User-Agent with 403, so set one. The UA is built from
     // Cargo package metadata at compile time so it stays accurate across version bumps.
     let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
             "/",
@@ -25,16 +34,93 @@ pub async fn fetch_article(url: &str) -> Result<String> {
         ))
         .build()
         .context("failed to build HTTP client")?;
-    let html = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("failed to fetch {url}"))?
-        .error_for_status()
-        .with_context(|| format!("server returned an error for {url}"))?
-        .text()
-        .await?;
+    let mut current = Url::parse(url).with_context(|| format!("invalid article URL {url:?}"))?;
+    let mut resp = None;
+    for _ in 0..=MAX_REDIRECTS {
+        validate_fetch_url(&current)?;
+        let r = client
+            .get(current.clone())
+            .send()
+            .await
+            .with_context(|| format!("failed to fetch {current}"))?;
+        if r.status().is_redirection() {
+            let loc = r
+                .headers()
+                .get(header::LOCATION)
+                .ok_or_else(|| anyhow::anyhow!("redirect from {current} did not include Location"))?
+                .to_str()
+                .with_context(|| format!("redirect Location from {current} is not valid text"))?;
+            current = current
+                .join(loc)
+                .with_context(|| format!("invalid redirect target {loc:?} from {current}"))?;
+            continue;
+        }
+        resp = Some(r.error_for_status().with_context(|| {
+            format!("server returned an error for {current}")
+        })?);
+        break;
+    }
+    let resp = resp.ok_or_else(|| anyhow::anyhow!("too many redirects while fetching {url}"))?;
+    if let Some(len) = resp.content_length() {
+        if len > MAX_ARTICLE_BYTES as u64 {
+            bail!("article response is too large ({len} bytes; max {MAX_ARTICLE_BYTES})");
+        }
+    }
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("failed to read article response body")?;
+        if body.len() + chunk.len() > MAX_ARTICLE_BYTES {
+            bail!("article response exceeded {MAX_ARTICLE_BYTES} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let html = String::from_utf8(body).context("article response was not valid UTF-8")?;
     Ok(html_to_text(&html))
+}
+
+fn validate_fetch_url(url: &Url) -> Result<()> {
+    match url.scheme() {
+        "http" | "https" => {}
+        other => bail!("unsupported article URL scheme {other:?}; use http or https"),
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("article URL has no host: {url}"))?;
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        bail!("article URL must not target localhost: {url}");
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .with_context(|| format!("could not resolve article URL host {host:?}"))?;
+    let ips: Vec<IpAddr> = addrs.map(|a| a.ip()).collect();
+    if ips.is_empty() {
+        bail!("article URL host resolved to no addresses: {host}");
+    }
+    if let Some(ip) = ips.into_iter().find(|ip| !is_public_ip(*ip)) {
+        bail!("article URL must not resolve to private or local address {ip}: {url}");
+    }
+    Ok(())
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified())
+        }
+        IpAddr::V6(ip) => {
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local())
+        }
+    }
 }
 
 /// Crudely convert an HTML document to plain text.

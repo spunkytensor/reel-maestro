@@ -52,8 +52,9 @@ cargo test music_mix_smoke -- --ignored --nocapture
 cargo test video_mode_smoke -- --ignored --nocapture
 ```
 
-End-to-end runs call paid model APIs. Only run them intentionally, with your own
-`OPENROUTER_API_KEY`, and note that they may incur charges.
+End-to-end fresh/generative runs call paid model APIs. Only run them intentionally, with your own
+non-placeholder `OPENROUTER_API_KEY`, and note that they may incur charges. A plain
+`reelmaestro --from <run-dir>` re-stitch is local/free and should not require an API key.
 
 ## Security artifacts
 

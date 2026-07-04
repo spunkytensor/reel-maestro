@@ -78,12 +78,17 @@ pub struct BuildOptions<'a> {
 /// per chapter and concat them so a long reel never holds every supersampled still in one
 /// ffmpeg filtergraph; reels keep the original single-pass render.
 pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
-    if opts.images.is_empty() {
-        bail!("no scene images to assemble");
-    }
+    validate_build_inputs(&opts)?;
     // Slice the audio timeline into one duration per scene, snapped to real word timings so cuts
     // land on the voiceover beats (see `scene_durations`).
     let durations = scene_durations(opts.scenes, opts.words, opts.audio)?;
+    if durations.len() != opts.scenes.len() {
+        bail!(
+            "duration calculation returned {} durations for {} scenes",
+            durations.len(),
+            opts.scenes.len()
+        );
+    }
 
     // Decide each scene's visual source: an AI video clip if one was produced for that
     // index, otherwise its still (which the renderer animates with Ken Burns). Renders
@@ -123,6 +128,39 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     } else {
         build_chunked(&opts, &media, &durations, &dissolves, fontsdir, output)
     }
+}
+
+fn validate_build_inputs(opts: &BuildOptions<'_>) -> Result<()> {
+    if opts.scenes.is_empty() {
+        bail!("no scenes to assemble");
+    }
+    if opts.images.len() != opts.scenes.len() {
+        bail!(
+            "scene/image length mismatch: {} scenes, {} images",
+            opts.scenes.len(),
+            opts.images.len()
+        );
+    }
+    if opts.clips.len() != opts.scenes.len() {
+        bail!(
+            "scene/clip length mismatch: {} scenes, {} clip slots",
+            opts.scenes.len(),
+            opts.clips.len()
+        );
+    }
+    for (i, image) in opts.images.iter().enumerate() {
+        if !image.exists() {
+            bail!("scene {i} image does not exist: {}", image.display());
+        }
+    }
+    for (i, clip) in opts.clips.iter().enumerate() {
+        if let Some(clip) = clip {
+            if !clip.exists() {
+                bail!("scene {i} video clip does not exist: {}", clip.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The original single-pass render: one ffmpeg invocation for the whole reel.
@@ -303,10 +341,60 @@ pub fn chapter_windows(chapters: &[Chapter], durations: &[f64]) -> Vec<(f64, f64
 /// size its Veo clips to match the exact slot each scene will occupy in the final reel.
 pub fn scene_durations(scenes: &[Scene], words: &[WordTiming], audio: &Path) -> Result<Vec<f64>> {
     let total = ffmpeg::duration_s(audio)?;
-    Ok(scene_windows(scenes, words, total)
+    let raw: Vec<f64> = scene_windows(scenes, words, total)
         .into_iter()
-        .map(|(start, end)| (end - start).max(0.5))
-        .collect())
+        .map(|(start, end)| end - start)
+        .collect();
+    apply_duration_floor(&raw, total, 0.5)
+}
+
+fn apply_duration_floor(raw: &[f64], total: f64, floor: f64) -> Result<Vec<f64>> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !total.is_finite() || total <= 0.0 {
+        bail!("total duration must be finite and positive, got {total:?}");
+    }
+    if !floor.is_finite() || floor <= 0.0 {
+        bail!("duration floor must be finite and positive, got {floor:?}");
+    }
+    let minimum = floor * raw.len() as f64;
+    if total + 1e-6 < minimum {
+        bail!(
+            "audio duration {total:.3}s is too short for {} scenes at the {floor:.3}s minimum ({minimum:.3}s required)",
+            raw.len()
+        );
+    }
+    let mut durations: Vec<f64> = raw
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| {
+            if !d.is_finite() || d < 0.0 {
+                bail!("scene {i} computed invalid duration {d:?}");
+            }
+            Ok(d.max(floor))
+        })
+        .collect::<Result<_>>()?;
+    let mut excess = durations.iter().sum::<f64>() - total;
+    while excess > 1e-6 {
+        let mut changed = false;
+        for d in &mut durations {
+            let room = (*d - floor).max(0.0);
+            if room > 0.0 {
+                let take = room.min(excess);
+                *d -= take;
+                excess -= take;
+                changed = true;
+                if excess <= 1e-6 {
+                    break;
+                }
+            }
+        }
+        if !changed {
+            bail!("could not preserve total duration while applying scene floor");
+        }
+    }
+    Ok(durations)
 }
 
 /// Assign each scene a `[start, end)` window (in seconds) over the audio timeline. A scene's window
@@ -320,6 +408,17 @@ pub fn scene_durations(scenes: &[Scene], words: &[WordTiming], audio: &Path) -> 
 /// index maps proportionally into `words` so a count mismatch degrades gracefully rather than
 /// collapsing late scenes. The final scene is pinned to `total` so the visuals cover the audio end.
 fn scene_windows(scenes: &[Scene], words: &[WordTiming], total: f64) -> Vec<(f64, f64)> {
+    if words.is_empty() {
+        let each = if scenes.is_empty() {
+            0.0
+        } else {
+            total / scenes.len() as f64
+        };
+        return (0..scenes.len())
+            .map(|i| (i as f64 * each, (i + 1) as f64 * each))
+            .collect();
+    }
+
     // Word count per scene; `.max(1)` guarantees a blank/empty line still claims a share
     // (and avoids a divide-by-zero if every line were empty).
     let counts: Vec<usize> = scenes
@@ -496,6 +595,15 @@ mod tests {
             w[0].1
         );
         assert!((w[1].1 - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn duration_floor_preserves_total_or_fails() {
+        let d = apply_duration_floor(&[0.1, 3.9], 4.0, 0.5).unwrap();
+        assert!((d[0] - 0.5).abs() < 1e-9);
+        assert!((d[1] - 3.5).abs() < 1e-9);
+        assert!((d.iter().sum::<f64>() - 4.0).abs() < 1e-9);
+        assert!(apply_duration_floor(&[0.1, 0.1], 0.8, 0.5).is_err());
     }
 
     #[test]

@@ -340,7 +340,7 @@ pub async fn from_narration(or: &OpenRouter, narration: &str) -> Result<Script> 
     let plan: ScenesOnly = or
         .chat_json(&system, &user, "scenes", scenes_schema())
         .await?;
-    let mut script = finalize(assemble_script(plan, narration));
+    let mut script = finalize_fixed_narration(assemble_script(plan, narration));
     if lines_reassemble(&script.narration, &script.scenes) {
         return Ok(script);
     }
@@ -361,7 +361,7 @@ pub async fn from_narration(or: &OpenRouter, narration: &str) -> Result<Script> 
         .await
     {
         Ok(plan) => {
-            let retried = finalize(assemble_script(plan, narration));
+            let retried = finalize_fixed_narration(assemble_script(plan, narration));
             if lines_reassemble(&retried.narration, &retried.scenes) {
                 return Ok(retried);
             }
@@ -381,6 +381,25 @@ pub async fn from_narration(or: &OpenRouter, narration: &str) -> Result<Script> 
         scene.line = chunk;
     }
     Ok(script)
+}
+
+fn finalize_fixed_narration(mut script: Script) -> Script {
+    let before = script.scenes.len();
+    let kept: Vec<Scene> = script
+        .scenes
+        .iter()
+        .filter(|s| !(s.line.trim().is_empty() && s.image_prompt.trim().is_empty()))
+        .cloned()
+        .collect();
+    if !kept.is_empty() && kept.len() < before {
+        eprintln!(
+            "  note: dropped {} empty scene(s) the scriptwriter appended",
+            before - kept.len()
+        );
+        script.scenes = kept;
+    }
+    script.normalize_entities();
+    script
 }
 
 /// Reassemble a scenes-only plan plus the fixed narration into a full [`Script`].
@@ -688,12 +707,9 @@ pub async fn youtube_from_narration(
     if outline.chapters.is_empty() {
         anyhow::bail!("chapterization returned no chapters");
     }
-    // The fixed narration must survive chapterization intact (dash cleanup applies to both
-    // sides identically, so compare post-cleanup).
-    let narration = remove_dashes(narration);
-    for ch in &mut outline.chapters {
-        ch.narration = remove_dashes(&ch.narration);
-    }
+    // The fixed narration must survive chapterization intact; do not apply dash cleanup on the
+    // verbatim `--script` path.
+    let narration = narration.to_string();
     let chunks: Vec<&str> = outline
         .chapters
         .iter()
@@ -730,7 +746,7 @@ pub async fn youtube_from_narration(
             .chat_json(&style, &user, "chapter", chapter_schema())
             .await?;
         cs.narration = fixed.clone(); // the chunk is fixed regardless of what the model echoed
-        clean_chapter(&mut cs);
+        clean_chapter_fixed(&mut cs);
         verify_chapter_chunking(or, &style, &user, &mut cs, Some(&fixed)).await;
         chapters.push(crate::model::Chapter {
             title: outline.chapters[idx].title.clone(),
@@ -832,6 +848,23 @@ fn clean_chapter(cs: &mut ChapterScenes) {
     }
 }
 
+fn clean_chapter_fixed(cs: &mut ChapterScenes) {
+    let before = cs.scenes.len();
+    let kept: Vec<Scene> = cs
+        .scenes
+        .iter()
+        .filter(|s| !(s.line.trim().is_empty() && s.image_prompt.trim().is_empty()))
+        .cloned()
+        .collect();
+    if !kept.is_empty() && kept.len() < before {
+        eprintln!(
+            "  note: dropped {} empty scene(s) from the chapter",
+            before - kept.len()
+        );
+        cs.scenes = kept;
+    }
+}
+
 /// Verify a chapter's scene `line`s chunk its narration exactly; on mismatch retry once with a
 /// corrective message, then fall back to proportional chunks. `fixed` pins the narration on the
 /// verbatim-`--script` path (the model's echoed narration is ignored there).
@@ -860,7 +893,11 @@ async fn verify_chapter_chunking(
         if let Some(f) = fixed {
             retried.narration = f.to_string();
         }
-        clean_chapter(&mut retried);
+        if fixed.is_some() {
+            clean_chapter_fixed(&mut retried);
+        } else {
+            clean_chapter(&mut retried);
+        }
         if lines_reassemble(&retried.narration, &retried.scenes) {
             *cs = retried;
             return;

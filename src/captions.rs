@@ -165,8 +165,25 @@ fn dialogue(card: &Card) -> String {
         "Dialogue: 0,{},{},Burst,,0,0,0,,{}",
         ass_time(card.start_s),
         ass_time(card.end_s),
-        card.text
+        escape_ass_text(&card.text)
     )
+}
+
+/// Escape user/transcriber text for ASS dialogue payloads. Braces delimit override tags and
+/// backslashes introduce ASS escapes, so render them literally; other control characters are
+/// normalized to spaces so a transcript cannot break the event line.
+fn escape_ass_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str(r"\\"),
+            '{' => out.push_str(r"\{"),
+            '}' => out.push_str(r"\}"),
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Format seconds as ASS time `H:MM:SS.cc` (centiseconds).
@@ -232,6 +249,15 @@ mod tests {
         assert!(ass.contains(",80,80,520,1"));
         assert!(ass.contains("Dialogue: 0,0:00:00.00,0:00:00.50,Burst"));
         assert!(ass.contains("HI"));
+    }
+
+    #[test]
+    fn dialogue_escapes_ass_control_syntax_and_control_chars() {
+        let style = CaptionStyle::for_format(crate::config::Format::Reel);
+        let ass = build_ass(&[w(r"{tag}\path", 0.0, 0.5), w("bad\nchar\t", 0.5, 1.0)], &style);
+        assert!(ass.contains(r"\{TAG\}\\PATH"));
+        assert!(ass.contains("BAD CHAR "));
+        assert!(!ass.contains("BAD\nCHAR"));
     }
 
     #[test]

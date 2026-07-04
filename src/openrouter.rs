@@ -7,12 +7,17 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
+use reqwest::Url;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use std::net::IpAddr;
 
 use crate::config::Config;
 
 const BASE: &str = "https://openrouter.ai/api/v1";
+const VIDEO_POLL_SECS: u64 = 20;
+const VIDEO_MAX_SECS: u64 = 10 * 60;
+const VIDEO_POLL_REQUEST_SECS: u64 = 15;
 
 /// Audio returned by text-to-speech, tagged with its container format.
 pub struct Speech {
@@ -403,19 +408,31 @@ impl OpenRouter {
                 )
                 .await?;
 
-            // Poll until done. Jobs take ~30s–several minutes; cap at ~10 minutes.
-            let max_polls = 30;
+            // Poll until done. Jobs take ~30s–several minutes; cap at ~10 minutes. Keep each
+            // poll's request timeout short enough that a hung request cannot silently extend the
+            // wall-clock cap by minutes.
+            let started = tokio::time::Instant::now();
+            let deadline = started + std::time::Duration::from_secs(VIDEO_MAX_SECS);
             let mut failure: Option<String> = None;
-            for _ in 0..max_polls {
-                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-                match self.poll_video(&polling_url).await? {
-                    VideoStatus::Pending => continue,
-                    VideoStatus::Failed(msg) => {
-                        failure = Some(msg);
-                        break;
-                    }
-                    VideoStatus::Done(content_url) => {
-                        return self.download_video(&content_url).await
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_secs(VIDEO_POLL_SECS)).await;
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let poll_timeout =
+                    remaining.min(std::time::Duration::from_secs(VIDEO_POLL_REQUEST_SECS));
+                match tokio::time::timeout(poll_timeout, self.poll_video(&polling_url)).await {
+                    Err(_) => continue,
+                    Ok(status) => match status? {
+                        VideoStatus::Pending => continue,
+                        VideoStatus::Failed(msg) => {
+                            failure = Some(msg);
+                            break;
+                        }
+                        VideoStatus::Done(content_url) => {
+                            return self.download_video(&content_url).await
+                        }
                     }
                 }
             }
@@ -436,7 +453,7 @@ impl OpenRouter {
                     }
                     bail!("video job failed: {last_err}");
                 }
-                None => bail!("video job timed out after {} minutes", max_polls * 20 / 60),
+                None => bail!("video job timed out after {} minutes", VIDEO_MAX_SECS / 60),
             }
         }
         bail!("video job failed: {last_err}")
@@ -469,7 +486,7 @@ impl OpenRouter {
             )
             .await;
         if let Err(e) = &submit {
-            if negative_prompt.is_some() {
+            if negative_prompt.is_some() && is_provider_field_rejection(e) {
                 eprintln!("    video submit failed ({e}); retrying without negative prompt");
                 submit = self
                     .submit_video(prompt, first_frame, &[], duration, resolution, None)
@@ -478,7 +495,7 @@ impl OpenRouter {
         }
         match submit {
             Ok(url) => Ok(url),
-            Err(e) if first_frame.is_some() => {
+            Err(e) if first_frame.is_some() && is_provider_field_rejection(&e) => {
                 eprintln!("    image-to-video submit failed ({e}); retrying as text-to-video");
                 self.submit_video(
                     prompt,
@@ -531,12 +548,7 @@ impl OpenRouter {
     /// success yields a content URL (preferring `unsigned_urls[0]`, else one built from the
     /// job id); any not-yet-terminal status maps to `Pending` so the caller keeps polling.
     async fn poll_video(&self, polling_url: &str) -> Result<VideoStatus> {
-        let resp = self
-            .http
-            .get(polling_url)
-            .bearer_auth(&self.api_key)
-            .send()
-            .await?;
+        let resp = self.safe_video_get(polling_url, "video polling URL").send().await?;
         let v = json_or_err(resp).await?;
         match v["status"].as_str().unwrap_or("") {
             "completed" | "succeeded" => {
@@ -558,12 +570,7 @@ impl OpenRouter {
 
     /// Download the finished MP4 bytes from a completed job's content URL.
     async fn download_video(&self, content_url: &str) -> Result<Vec<u8>> {
-        let resp = self
-            .http
-            .get(content_url)
-            .bearer_auth(&self.api_key)
-            .send()
-            .await?;
+        let resp = self.safe_video_get(content_url, "video content URL").send().await?;
         let status = resp.status();
         if !status.is_success() {
             bail!(
@@ -572,6 +579,20 @@ impl OpenRouter {
             );
         }
         Ok(resp.bytes().await?.to_vec())
+    }
+
+    /// Build a GET for OpenRouter video polling/content URLs without leaking bearer auth to
+    /// provider/CDN unsigned URLs. Auth is attached only to HTTPS OpenRouter API URLs; all other
+    /// public HTTPS URLs are fetched without auth. Non-HTTPS, private IP, and malformed URLs are
+    /// rejected before any request is made.
+    fn safe_video_get(&self, url: &str, purpose: &str) -> Result<reqwest::RequestBuilder> {
+        let parsed = validate_public_https_url(url, purpose)?;
+        let builder = self.http.get(parsed.clone());
+        if is_openrouter_host(&parsed) {
+            Ok(builder.bearer_auth(&self.api_key))
+        } else {
+            Ok(builder)
+        }
     }
 }
 
@@ -711,6 +732,88 @@ fn describe_video_error(v: &Value) -> String {
         parts.push(format!("no error detail in response; raw: {raw}"));
     }
     parts.join(" — ")
+}
+
+/// Conservative test for video-submit errors where it is safe to alter the request shape and
+/// resubmit. Transient/network failures, rate limits, and 5xxs must bubble out so outer retry logic
+/// can handle them without accidentally buying a different kind of clip.
+fn is_provider_field_rejection(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    let is_known_field_4xx = ["(400", "(422"]
+        .iter()
+        .any(|needle| msg.contains(needle));
+    if !is_known_field_4xx || msg.contains("(429") || msg.contains("(5") {
+        return false;
+    }
+
+    let mentions_video_field = [
+        "negativeprompt",
+        "negative prompt",
+        "provider",
+        "passthrough",
+        "frame_images",
+        "first_frame",
+        "image-to-video",
+        "image to video",
+        "input image",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle));
+    let mentions_rejection = [
+        "unsupported field",
+        "unknown field",
+        "invalid field",
+        "unrecognized",
+        "not supported",
+        "unsupported",
+        "invalid parameter",
+        "invalid request",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle));
+    mentions_video_field && mentions_rejection
+}
+
+fn validate_public_https_url(url: &str, purpose: &str) -> Result<Url> {
+    let parsed = Url::parse(url).with_context(|| format!("invalid {purpose}: {url}"))?;
+    if parsed.scheme() != "https" {
+        bail!("unsafe {purpose}: expected https URL, got {url}");
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("unsafe {purpose}: URL has no host: {url}"))?;
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        bail!("unsafe {purpose}: local host name is not allowed: {url}");
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if !is_public_ip(ip) {
+            bail!("unsafe {purpose}: private or local IP address is not allowed: {url}");
+        }
+    }
+    Ok(parsed)
+}
+
+fn is_openrouter_host(url: &Url) -> bool {
+    matches!(url.host_str(), Some("openrouter.ai"))
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified())
+        }
+        IpAddr::V6(ip) => {
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local())
+        }
+    }
 }
 
 /// Build a base64 `data:` URL from image bytes, sniffing the MIME type from the
@@ -958,6 +1061,54 @@ mod tests {
         // No structured detail → compact raw dump instead of being lost.
         let m = describe_video_error(&json!({"status": "failed"}));
         assert!(m.contains("raw:"));
+    }
+
+    #[test]
+    fn video_submit_fallback_only_for_known_4xx_field_rejections() {
+        assert!(is_provider_field_rejection(&anyhow!(
+            "OpenRouter request failed (400 Bad Request): unsupported field negativePrompt"
+        )));
+        assert!(is_provider_field_rejection(&anyhow!(
+            "OpenRouter request failed (422 Unprocessable Entity): frame_images is not supported"
+        )));
+        assert!(!is_provider_field_rejection(&anyhow!(
+            "OpenRouter request failed (429 Too Many Requests): rate limited"
+        )));
+        assert!(!is_provider_field_rejection(&anyhow!(
+            "OpenRouter request failed (500 Internal Server Error): upstream unavailable"
+        )));
+        assert!(!is_provider_field_rejection(&anyhow!(
+            "error sending request for url (https://openrouter.ai/api/v1/videos)"
+        )));
+        assert!(!is_provider_field_rejection(&anyhow!(
+            "OpenRouter request failed (400 Bad Request): account has insufficient credits"
+        )));
+    }
+
+    #[test]
+    fn video_urls_must_be_public_https() {
+        assert!(validate_public_https_url(
+            "https://openrouter.ai/api/v1/videos/job",
+            "test URL"
+        )
+        .is_ok());
+        assert!(validate_public_https_url("https://cdn.example.com/video.mp4", "test URL")
+            .is_ok());
+        assert!(validate_public_https_url("http://openrouter.ai/api/v1/videos/job", "test URL")
+            .is_err());
+        assert!(validate_public_https_url("https://localhost/video.mp4", "test URL").is_err());
+        assert!(validate_public_https_url("https://127.0.0.1/video.mp4", "test URL").is_err());
+        assert!(validate_public_https_url("https://10.0.0.4/video.mp4", "test URL").is_err());
+    }
+
+    #[test]
+    fn only_openrouter_host_gets_video_bearer_auth() {
+        let openrouter = Url::parse("https://openrouter.ai/api/v1/videos/job").unwrap();
+        let cdn = Url::parse("https://cdn.example.com/video.mp4").unwrap();
+        let lookalike = Url::parse("https://openrouter.ai.evil.example/video.mp4").unwrap();
+        assert!(is_openrouter_host(&openrouter));
+        assert!(!is_openrouter_host(&cdn));
+        assert!(!is_openrouter_host(&lookalike));
     }
 
     #[test]

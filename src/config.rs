@@ -223,11 +223,18 @@ pub struct Config {
 }
 
 impl Config {
-    /// Resolve every setting for this run. The API key is mandatory and fails fast if missing;
-    /// everything else falls back through env var to the quality tier's default.
-    pub fn load(cli: &Cli) -> Result<Config> {
-        let api_key = std::env::var("OPENROUTER_API_KEY")
-            .context("OPENROUTER_API_KEY is not set (put it in a .env file or your environment)")?;
+    /// Resolve every setting for this run. The API key is mandatory only for runs that will call
+    /// OpenRouter; a plain `--from` re-stitch is local/free.
+    pub fn load(cli: &Cli, needs_api: bool) -> Result<Config> {
+        let api_key = if needs_api {
+            let key = std::env::var("OPENROUTER_API_KEY").context(
+                "OPENROUTER_API_KEY is not set (put it in a .env file or your environment)",
+            )?;
+            validate_api_key(&key)?;
+            key
+        } else {
+            std::env::var("OPENROUTER_API_KEY").unwrap_or_default()
+        };
 
         let quality = cli
             .quality
@@ -236,10 +243,13 @@ impl Config {
         let tier = tier_defaults(quality);
 
         let format = cli.format.or_else(format_from_env).unwrap_or(Format::Reel);
-        let minutes = cli
-            .minutes
-            .or_else(|| std::env::var("REELMAESTRO_MINUTES").ok()?.parse().ok())
-            .unwrap_or(3.0);
+        let minutes = positive_finite(
+            match cli.minutes {
+                Some(v) => v,
+                None => parse_env_f64("REELMAESTRO_MINUTES")?.unwrap_or(3.0),
+            },
+            "minutes",
+        )?;
         match format {
             Format::Youtube if !(1.0..=12.0).contains(&minutes) => {
                 bail!("--minutes must be between 1 and 12 (got {minutes})");
@@ -300,18 +310,21 @@ impl Config {
                 .voice
                 .clone()
                 .or_else(|| std::env::var("REELMAESTRO_VOICE").ok()),
-            video_resolution: pick(
+            video_resolution: parse_video_resolution(&pick(
                 &cli.video_resolution,
                 "REELMAESTRO_VIDEO_RESOLUTION",
                 tier.video_resolution,
-            ),
-            validate_scene: cli
-                .validate_scene
-                .or_else(|| {
-                    let v = std::env::var("REELMAESTRO_VALIDATE_SCENE").ok()?;
-                    crate::parse_validate_scene(&v).ok()
-                })
-                .unwrap_or(tier.validate_scene),
+            ))?,
+            validate_scene: match cli.validate_scene {
+                Some(v) => v,
+                None => match std::env::var("REELMAESTRO_VALIDATE_SCENE") {
+                    Ok(v) => crate::parse_validate_scene(&v)
+                        .map_err(anyhow::Error::msg)
+                        .with_context(|| "REELMAESTRO_VALIDATE_SCENE is invalid")?,
+                    Err(std::env::VarError::NotPresent) => tier.validate_scene,
+                    Err(e) => return Err(e).context("could not read REELMAESTRO_VALIDATE_SCENE"),
+                },
+            },
             whisper_cmd: pick(
                 &cli.whisper_cmd,
                 "REELMAESTRO_WHISPER_CMD",
@@ -320,17 +333,54 @@ impl Config {
             whisper_model: pick(&cli.whisper_model, "REELMAESTRO_WHISPER_MODEL", "base"),
             no_captions: cli.no_captions || env_flag("REELMAESTRO_NO_CAPTIONS"),
             no_narration: cli.no_narration || env_flag("REELMAESTRO_NO_NARRATION"),
-            scene_seconds: cli
-                .scene_seconds
-                .or_else(|| {
-                    std::env::var("REELMAESTRO_SCENE_SECONDS")
-                        .ok()?
-                        .parse()
-                        .ok()
-                })
-                .unwrap_or(4.0),
+            scene_seconds: positive_finite(
+                match cli.scene_seconds {
+                    Some(v) => v,
+                    None => parse_env_f64("REELMAESTRO_SCENE_SECONDS")?.unwrap_or(4.0),
+                },
+                "scene seconds",
+            )?,
         })
     }
+}
+
+fn positive_finite(value: f64, name: &str) -> Result<f64> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        bail!("{name} must be finite and positive, got {value:?}")
+    }
+}
+
+fn validate_api_key(key: &str) -> Result<()> {
+    let trimmed = key.trim();
+    if trimmed.is_empty()
+        || trimmed == "sk-or-v1-..."
+        || trimmed.contains("replace-with")
+        || trimmed.contains("replace_me")
+        || trimmed.contains("your-openrouter-api-key")
+        || trimmed.contains("YOUR_")
+        || trimmed.contains('<')
+        || trimmed.eq_ignore_ascii_case("placeholder")
+    {
+        bail!("OPENROUTER_API_KEY is empty or still a placeholder");
+    }
+    Ok(())
+}
+
+fn parse_env_f64(name: &str) -> Result<Option<f64>> {
+    match std::env::var(name) {
+        Ok(v) => v
+            .parse::<f64>()
+            .map(Some)
+            .with_context(|| format!("{name} must be a number (got {v:?})")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("could not read {name}")),
+    }
+}
+
+fn parse_video_resolution(v: &str) -> Result<String> {
+    crate::parse_video_resolution(v).map_err(anyhow::Error::msg)
 }
 
 /// Read the output format from `REELMAESTRO_FORMAT` (reel/youtube), if set and valid.

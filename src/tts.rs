@@ -37,6 +37,8 @@ pub async fn synthesize(or: &OpenRouter, narration: &str, out: &Path, speed: f64
     // applies the `atempo` time-stretch in the same pass.
     let raw = out.with_file_name(format!("audio-raw.{}", speech.format));
     std::fs::write(&raw, &speech.bytes)?;
-    ffmpeg::transcode_to_mp3(&raw, out, speech.format == "pcm", speed)?;
+    let transcode = ffmpeg::transcode_to_mp3(&raw, out, speech.format == "pcm", speed);
+    let _ = std::fs::remove_file(&raw);
+    transcode?;
     Ok(())
 }

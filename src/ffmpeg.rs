@@ -63,9 +63,14 @@ pub fn duration_s(path: &Path) -> Result<f64> {
         bail!("ffprobe failed:\n{}", String::from_utf8_lossy(&out.stderr));
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    text.trim()
+    let duration = text
+        .trim()
         .parse::<f64>()
-        .with_context(|| format!("could not parse duration from ffprobe output: {text:?}"))
+        .with_context(|| format!("could not parse duration from ffprobe output: {text:?}"))?;
+    if !duration.is_finite() || duration <= 0.0 {
+        bail!("ffprobe returned invalid duration {duration:?} for {}", path.display());
+    }
+    Ok(duration)
 }
 
 /// Transcode an audio file to mp3, optionally changing tempo (pitch-preserving).
@@ -94,6 +99,9 @@ pub fn transcode_to_mp3(input: &Path, output: &Path, raw_pcm: bool, speed: f64) 
 /// Write a silent stereo MP3 of the given length. Used as the timeline/clock for reels with
 /// no spoken narration (music, if any, is mixed over it just like it would be over speech).
 pub fn silent_track(output: &Path, seconds: f64) -> Result<()> {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        bail!("silent track duration must be finite and positive, got {seconds:?}");
+    }
     run_ffmpeg(&[
         "-f",
         "lavfi",
@@ -373,8 +381,33 @@ fn build_video_graph(
     fontsdir: Option<&str>,
     canvas: Canvas,
     watermark: Option<&str>,
-) -> VideoGraph {
+) -> Result<VideoGraph> {
     let n = media.len();
+    if n == 0 {
+        bail!("no scene media to render");
+    }
+    if durations.len() != n {
+        bail!(
+            "scene media/duration length mismatch: {} media items, {} durations",
+            n,
+            durations.len()
+        );
+    }
+    if dissolves.len() > n.saturating_sub(1) {
+        bail!(
+            "too many dissolve flags: got {}, expected at most {}",
+            dissolves.len(),
+            n.saturating_sub(1)
+        );
+    }
+    if !dissolve_seconds.is_finite() || dissolve_seconds < 0.0 {
+        bail!("dissolve seconds must be finite and non-negative, got {dissolve_seconds:?}");
+    }
+    for (i, &d) in durations.iter().enumerate() {
+        if !d.is_finite() || d <= 0.0 {
+            bail!("scene {i} duration must be finite and positive, got {d:?}");
+        }
+    }
 
     // Per-junction cross-dissolve length (0.0 = hard cut). Clamp so a dissolve never exceeds half
     // of either neighbor's on-screen time, and drop sub-0.1s dissolves back to cuts (too short to
@@ -542,12 +575,12 @@ fn build_video_graph(
         input_count += 1;
     }
 
-    VideoGraph {
+    Ok(VideoGraph {
         input_args,
         parts,
         video_map,
         input_count,
-    }
+    })
 }
 
 /// The shared H.264 video encode settings: H.264 in the pixel format every phone/browser can
@@ -596,7 +629,7 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         fontsdir,
         canvas,
         watermark,
-    );
+    )?;
 
     // Audio inputs follow the graph's video inputs (scenes + optional watermark).
     let base = graph.input_count;
@@ -705,7 +738,7 @@ pub fn render_segment(opts: RenderSegmentOptions<'_>) -> Result<()> {
         opts.fontsdir,
         opts.canvas,
         opts.watermark,
-    );
+    )?;
     let mut args: Vec<String> = vec!["-y".into(), "-loglevel".into(), "error".into()];
     args.extend(graph.input_args);
     let filter = graph.parts.join(";");
@@ -730,6 +763,9 @@ pub fn mix_audio(
     total: f64,
     output: &str,
 ) -> Result<()> {
+    if !total.is_finite() || total <= 0.0 {
+        bail!("audio mix duration must be finite and positive, got {total:?}");
+    }
     let mut args: Vec<String> = vec!["-y".into(), "-loglevel".into(), "error".into()];
     args.push("-i".into());
     args.push(audio.to_string());
