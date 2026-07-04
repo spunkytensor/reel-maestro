@@ -16,7 +16,8 @@ if [ ! -f .env ]; then
 fi
 
 # --- Rust toolchain (MSRV 1.88) -----------------------------------------
-# Debian 12 orbs do not ship Rust; install via rustup if missing.
+# Amp/E2B base orbs do not necessarily ship Rust. Install via rustup if missing so agents can run
+# the required cargo fmt/clippy/test/build/package checks before handing work back.
 if ! command -v cargo >/dev/null 2>&1; then
   echo "==> Installing Rust toolchain via rustup"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \

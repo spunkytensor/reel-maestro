@@ -21,6 +21,11 @@ timing, image generation, optional music/video generation, and local ffmpeg asse
 
 ## Common commands
 
+Fresh orbs should run `.agents/setup`, which installs Rust 1.88 via rustup and sources
+`$HOME/.cargo/env` on resume. If `cargo`/`rustc` are missing, do not stop at
+"cargo: command not found"; first run `.agents/setup` (or source `$HOME/.cargo/env` if setup has
+already installed Rust), then retry the requested Rust checks.
+
 ```bash
 cargo fmt --all
 cargo fmt --all --check
