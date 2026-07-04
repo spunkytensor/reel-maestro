@@ -6,9 +6,11 @@
   <img src="logo.jpg" alt="Reel Maestro logo" width="240">
 </p>
 
-Reel Maestro is a small, single-binary Rust CLI that turns an idea into a vertical (9:16)
-TikTok/Reels/Shorts-style video with **AI-generated narration audio, images, and burned-in
-captions** — all through a single **OpenRouter API key**. No Docker, no server, no dashboard.
+Reel Maestro is a small, single-binary Rust CLI that turns an idea into a video with
+**AI-generated narration audio, images, and burned-in captions** — all through a single
+**OpenRouter API key**. It makes both vertical (9:16) TikTok/Reels/Shorts reels and, with
+`--format youtube`, landscape (16:9) long-form YouTube videos with a chaptered script and
+pastable metadata. No Docker, no server, no dashboard.
 
 This project is open source under the [Apache License 2.0](LICENSE). Contributions are
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
@@ -51,6 +53,10 @@ character and an **establishing shot** per location are generated first, then ev
 is conditioned on them and checked by a **vision judge** that re-rolls drifting or malformed frames
 (see [Realism and consistency](#realism-and-consistency)). Scenes are Ken Burns stills by default;
 `--video` animates them into **Veo** clips.
+
+The same pipeline also produces landscape long-form videos with `--format youtube`: the script is
+planned as chapters, each chapter renders to its own segment, and the segments are
+stream-concatenated into one video (see [Long-form YouTube mode](#long-form-youtube-mode)).
 
 ## Requirements
 
@@ -189,7 +195,10 @@ verbatim as the narration. (You can also do the brief inline with `--topic "$(ca
 
 Output lands in a timestamped folder `out/<YYYYMMDD_HHMMSS>_<title-slug>/` (e.g.
 `out/20260618_092729_the-sheepdog-and-the-duck/`):
-`reel.mp4`, `poster.jpg`, `reel.ass`, `audio.mp3`, `scene-NN.jpg`, `clip-NN.mp4`, `script.json`, `words.json`.
+`reel.mp4`, `poster.jpg`, `reel.ass`, `audio.mp3`, `scene-NN.jpg`, `scene-NN.mp4` (video clips),
+`script.json`, `words.json`. A `--format youtube` run is 1920×1080 and adds `youtube.md` (pastable
+metadata) plus per-chapter `segment-NN.mp4` intermediates (and `chapter-NN.mp3` if the single TTS
+call had to fall back to per-chapter synthesis) — see [Long-form YouTube mode](#long-form-youtube-mode).
 
 A reel that includes AI **video** clips is written as **`reel-video.mp4`** instead of `reel.mp4`, so a
 still preview and a later video upgrade of the same run can coexist in the folder rather than one
@@ -215,10 +224,14 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--music <file>` | — | Use your own audio file as the soundtrack (overrides `--music-gen`). |
 | `--mix <duck\|low>` | `duck` | How music sits under narration: `duck` = auto-dip under the voice; `low` = constant volume. |
 | `--music-volume <f64>` | `0.6` | Background music gain. Higher = louder; raise toward `1.0`+ for a stronger bed. |
-| `--video` | off | Render ALL scenes as AI video clips (Veo image-to-video). ~$0.05/sec. |
+| `--video` | off | Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video model/resolution (default Veo 3.1 Lite ≈ $0.05/sec at 720p). |
 | `--video-scenes <N>` | — | Render only the first N scenes as video; the rest stay Ken Burns stills (caps cost). |
-| `--video-resolution <res>` | `720p` | Veo clip resolution (`720p`/`1080p`). |
+| `--video-resolution <res>` | tier (`720p`) | Veo clip resolution (`720p`/`1080p`). Defaults from the quality tier (`1080p` on `premium`). |
+| `--quality <draft\|standard\|premium>` | `standard` | Quality/cost tier presetting the model defaults: `draft` = cheapest models + validation off (~3-5x cheaper); `premium` = Opus script, Veo 3.1 Fast 1080p, deepest validation. Explicit model flags/envs still override. |
+| `--format <reel\|youtube>` | `reel` | Output format. `youtube` = landscape 16:9 long-form with a chaptered script, per-chapter TTS + rendering, a 1280x720 thumbnail, and a `youtube.md` metadata file (title/description/tags/chapter timestamps). |
+| `--minutes <N>` | `3` | Target length in minutes for `--format youtube` (1-12). Drives the narration word budget, scene count, and chapter count (~1/min). |
 | `--character-ref <file>` | — | Use this photo as the recurring character across all scenes (overrides the generated portrait). |
+| `--watermark <file>` | — | Overlay a watermark (PNG with alpha) on the final video, bottom-right, auto-scaled to the format (≈16% of frame width). Works on fresh runs and `--from` resumes. |
 | `--no-consistency` | off | Disable automatic character-consistency conditioning. |
 | `--poster-scene <N>` | `0` | Fallback only: which scene's frame to use if custom poster generation fails (0 = hook). |
 | `--no-embed-poster` | off | Write `poster.jpg` but don't embed it as the MP4's cover art. |
@@ -226,24 +239,72 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--no-dissolve` | off | Force hard cuts between every scene (disable cross-dissolves). |
 | `--dissolve-seconds <f64>` | `0.5` | Cross-dissolve length for scriptwriter-flagged still→still transitions. |
 | `--no-grade` | off | Disable the unified cinematic colour grade / film grain + cross-scene exposure match. |
-| `--validate-scene <off\|2\|3>` | `2` | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` (default) / `3` = up to that many candidates at up to N× image cost. |
+| `--validate-scene <off\|2\|3>` | tier (`2`) | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` / `3` = up to that many candidates at up to N× image cost. Defaults from the quality tier (off on `draft`, 3 on `premium`). |
 | `--no-narration` | off | No spoken voiceover — produce a silent or music-only video. |
 | `--scene-seconds <f64>` | `4.0` | Per-scene length used when `--no-narration` is set (no audio to time against). |
 | `--no-images` | off | Stop right after writing word timings (script + TTS + timing only). Cheap way to test caption timing. |
 | `--whisper-cmd <cmd>` | `whisper_timestamped` | Local command that emits word-level timestamps. |
 | `--whisper-model <name>` | `base` | Whisper model for local timing (`base`, `small`, `large-v3`, …). |
-| `--text-model` / `--image-model` / `--tts-model` / `--music-model` | see `.env.example` | Per-stage OpenRouter model overrides. |
+| `--text-model` / `--image-model` / `--tts-model` / `--music-model` / `--judge-model` | see `.env.example` | Per-stage OpenRouter model overrides (the judge is the multimodal model scoring scene consistency). |
+
+## Long-form YouTube mode
+
+```bash
+reelmaestro --topic "the history of espresso" --format youtube --minutes 5
+```
+
+`--format youtube` switches the whole pipeline to landscape 16:9 long-form:
+
+- **Chaptered script** — one outline call plans the arc, characters/locations canon, YouTube
+  description and tags; then one call per chapter (~1/minute) writes that chapter's narration
+  and scenes with the full outline + canon as context. Scene/character consistency machinery
+  (reference portraits, text locks, the vision judge) works exactly as in reel mode.
+- **Single-call narration** — the whole narration is synthesized in one TTS call so the voice
+  stays consistent for the entire video (a generative TTS like the default Gemini re-samples the
+  speaker on each independent call, so splitting per chapter makes the voice shift at the seams).
+  Only if a single call comes back truncated on a very long script does it fall back to
+  per-chapter synthesis (`chapter-NN.mp3`, concatenated) — a complete narration is worth the
+  possible seam. For a rock-solid voice on very long videos, use a classic named-voice model:
+  `--tts-model microsoft/mai-voice-2 --voice <a MAI voice>` (fresh run — resume reuses the
+  existing audio).
+- **Chunked rendering** — each chapter renders to a video-only `segment-NN.mp4`, then segments
+  are stream-copy concatenated and the narration/music mix is muxed once. Dozens of scenes never
+  sit in one giant ffmpeg filtergraph.
+- **Outputs** — a 1920x1080 `reel.mp4` (or `reel-video.mp4`), a 1280x720 `poster.jpg` thumbnail,
+  and `youtube.md` with the title, description, tags, and `0:00`-style chapter timestamps ready
+  to paste into a YouTube upload.
+- **Video model** — the default becomes `alibaba/wan-2.6` (~$0.04/s, clips up to 15s, so long
+  scene windows aren't slow-motion-stretched like 8s-capped Veo clips). Wan is newer to this
+  pipeline than Veo; switch back per run with `--video-model google/veo-3.1-lite`. Cost scales
+  with length: `--video` on a 5-minute video is roughly $12 at Wan rates — prefer Ken Burns
+  stills plus a few `--video-scenes` highlights.
+- Captions stay on, restyled smaller for the 16:9 canvas (`--no-captions` still applies). A
+  single generated music track loops for the whole video, which can get audibly repetitive on
+  long runs — consider `--music <file>` with a longer track.
+
+`--from <dir>` resume reads the stored format from `script.json`, so re-renders and `--video`
+upgrades keep the right geometry automatically.
 
 ## Models (defaults)
 
-| Stage | Default model | Env override |
+Model defaults come from the `--quality` tier (`REELMAESTRO_QUALITY`); the table shows the
+`standard` tier. Explicit per-model flags/envs always override the tier's pick.
+
+| Stage | Default model (standard) | Env override |
 |---|---|---|
 | Script | `anthropic/claude-sonnet-4-6` | `REELMAESTRO_TEXT_MODEL` |
+| Consistency judge | `google/gemini-2.5-flash` | `REELMAESTRO_JUDGE_MODEL` |
 | Image | `google/gemini-3-pro-image` (Gemini 3 Pro Image) | `REELMAESTRO_IMAGE_MODEL` |
 | TTS | `google/gemini-3.1-flash-tts-preview` (voice `Kore`) | `REELMAESTRO_TTS_MODEL` |
 | Word timing | `whisper_timestamped` (**local**, `base` model) | `REELMAESTRO_WHISPER_CMD` / `REELMAESTRO_WHISPER_MODEL` |
 | Music (opt-in) | `google/lyria-3-pro-preview` | `REELMAESTRO_MUSIC_MODEL` |
-| Video (opt-in) | `google/veo-3.1-lite` | `REELMAESTRO_VIDEO_MODEL` |
+| Video (opt-in) | `google/veo-3.1-lite` (youtube mode: `alibaba/wan-2.6`) | `REELMAESTRO_VIDEO_MODEL` |
+
+Tier deltas: `--quality draft` swaps the script model to `anthropic/claude-haiku-4-5`, images to
+`google/gemini-3.1-flash-image` (Nano Banana 2, ~half the image cost), the judge to
+`google/gemini-3.1-flash-lite`, and turns scene validation off. `--quality premium` upgrades the
+script to `anthropic/claude-opus-4-8`, video to `google/veo-3.1-fast` at `1080p`
+(~$0.12/sec), and validation to 3 candidates/scene.
 
 Browse current speech models at `https://openrouter.ai/api/v1/models?output_modalities=speech`
 (TTS). Note OpenAI TTS voices (`alloy`, `nova`) differ from Gemini voices (`Kore`, `Charon`,
@@ -515,7 +576,7 @@ flowchart TD
 
     %% Optional AI video clips
     stills --> veo["🎬 Video model · per scene<br/>Veo image-to-video"]
-    veo --> clips["clip-NN.mp4"]
+    veo --> clips["scene-NN.mp4"]
 
     %% Final assembly
     stills --> mux["🛠️ ffmpeg<br/>Ken Burns + concat + burn-in + mux"]
@@ -539,7 +600,7 @@ flowchart TD
 | TTS | `google/gemini-3.1-flash-tts-preview` | `audio.mp3` | narration + master clock |
 | Word timing *(local)* | `whisper_timestamped` | `words.json` | caption timing → `.ass` |
 | Music *(opt-in)* | `google/lyria-3-pro-preview` | `music.wav` | background soundtrack |
-| Video *(opt-in)* | `google/veo-3.1-lite` | `clip-NN.mp4` | animated scenes |
+| Video *(opt-in)* | `google/veo-3.1-lite` (youtube: `alibaba/wan-2.6`) | `scene-NN.mp4` | animated scenes |
 
 ## Contributing
 

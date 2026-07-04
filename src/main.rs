@@ -10,6 +10,7 @@ mod config;
 mod extract;
 mod ffmpeg;
 mod images;
+mod metadata;
 mod model;
 mod music;
 mod openrouter;
@@ -85,7 +86,8 @@ pub struct Cli {
     #[arg(long)]
     no_images: bool,
 
-    /// Render ALL scenes as AI video clips (Veo image-to-video). Costs ~$0.05/sec.
+    /// Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video
+    /// model/resolution — the default Veo 3.1 Lite is ~$0.05/sec at 720p.
     #[arg(long)]
     video: bool,
 
@@ -93,9 +95,10 @@ pub struct Cli {
     #[arg(long)]
     video_scenes: Option<usize>,
 
-    /// Video clip resolution (e.g. 720p, 1080p).
-    #[arg(long, default_value = "720p")]
-    video_resolution: String,
+    /// Video clip resolution (720p or 1080p). Default comes from the quality tier (720p except
+    /// --quality premium).
+    #[arg(long)]
+    video_resolution: Option<String>,
 
     /// Don't burn captions into the video.
     #[arg(long)]
@@ -106,10 +109,26 @@ pub struct Cli {
     no_dissolve: bool,
 
     /// Per-scene consistency validation: generate candidates and keep the one a vision model judges
-    /// most consistent, re-rolling drifting frames. `off` = one candidate, no judging; `2` (default)
-    /// or `3` = up to that many candidates at up to N× the image cost.
-    #[arg(long, value_name = "off|2|3", value_parser = parse_validate_scene, default_value = "2")]
-    validate_scene: usize,
+    /// most consistent, re-rolling drifting frames. `off` = one candidate, no judging; `2` or `3` =
+    /// up to that many candidates at up to N× the image cost. Default comes from the quality tier
+    /// (2 for standard, off for draft, 3 for premium).
+    #[arg(long, value_name = "off|2|3", value_parser = parse_validate_scene)]
+    validate_scene: Option<usize>,
+
+    /// Quality/cost tier that presets the model defaults: `draft` (cheapest models, validation
+    /// off), `standard` (the regular defaults), `premium` (best models, 1080p video, deepest
+    /// validation). Explicit --*-model flags and env vars still override the tier's picks.
+    #[arg(long, value_enum)]
+    quality: Option<config::Quality>,
+
+    /// Output format: `reel` (vertical 9:16 short, the default) or `youtube` (landscape 16:9
+    /// long-form with chapters, a 1280x720 thumbnail, and a youtube.md metadata file).
+    #[arg(long, value_enum)]
+    format: Option<config::Format>,
+
+    /// Target video length in minutes (youtube format only; 1-12, default 3).
+    #[arg(long)]
+    minutes: Option<f64>,
 
     /// Disable the cinematic colour grade / film grain applied to the final video.
     #[arg(long)]
@@ -143,6 +162,11 @@ pub struct Cli {
     #[arg(long)]
     character_ref: Option<PathBuf>,
 
+    /// Overlay this watermark image (a PNG with alpha) on the final video, scaled to the format
+    /// and placed bottom-right. Works on fresh runs and `--from` resumes.
+    #[arg(long)]
+    watermark: Option<PathBuf>,
+
     #[arg(long)]
     text_model: Option<String>,
     #[arg(long)]
@@ -151,6 +175,9 @@ pub struct Cli {
     tts_model: Option<String>,
     #[arg(long)]
     music_model: Option<String>,
+    /// Multimodal model for the scene-consistency judge (cheaper than the script model).
+    #[arg(long)]
+    judge_model: Option<String>,
 
     /// Local command that produces word-level timestamps (default: `whisper_timestamped`).
     #[arg(long)]
@@ -164,7 +191,8 @@ pub struct Cli {
 
 /// Parse `--validate-scene`: `off` → 0 (validation disabled, one candidate); `2`/`3` → that many
 /// candidates judged per scene. `1` is rejected — "keep the most consistent" needs ≥2 candidates.
-fn parse_validate_scene(s: &str) -> Result<usize, String> {
+/// `pub(crate)` so config.rs applies the same rule to `REELMAESTRO_VALIDATE_SCENE`.
+pub(crate) fn parse_validate_scene(s: &str) -> Result<usize, String> {
     match s {
         "off" | "0" => Ok(0),
         "2" => Ok(2),
@@ -202,6 +230,13 @@ async fn run(cli: &Cli) -> Result<()> {
     let cfg = Config::load(cli)?;
     let mut or = OpenRouter::new(&cfg)?;
 
+    // Resolve/validate the watermark up front (fail fast, before any generation) into an
+    // absolute path — the render runs with the run folder as its working directory.
+    let watermark = match &cli.watermark {
+        Some(p) => Some(resolve_watermark(p)?),
+        None => None,
+    };
+
     let resume = cli.from.is_some();
 
     // 1. Script ---------------------------------------------------------------
@@ -223,22 +258,39 @@ async fn run(cli: &Cli) -> Result<()> {
         (script, from.clone())
     } else {
         println!("→ writing script ({}) ...", or.text_model);
+        let yt = cfg.format == config::Format::Youtube;
         let script = if let Some(topic) = &cli.topic {
-            script::from_topic(&or, topic).await?
+            if yt {
+                script::youtube_from_topic(&or, topic, cfg.minutes).await?
+            } else {
+                script::from_topic(&or, topic).await?
+            }
         } else if let Some(path) = &cli.brief {
             // The file's contents are the brief/notes the AI writes a script FROM.
             let brief = std::fs::read_to_string(path)
                 .with_context(|| format!("could not read brief file {}", path.display()))?;
-            script::from_brief(&or, brief.trim()).await?
+            if yt {
+                script::youtube_from_brief(&or, brief.trim(), cfg.minutes).await?
+            } else {
+                script::from_brief(&or, brief.trim()).await?
+            }
         } else if let Some(path) = &cli.script {
             // The file's contents are used verbatim as the narration.
             let narration = std::fs::read_to_string(path)
                 .with_context(|| format!("could not read script file {}", path.display()))?;
-            script::from_narration(&or, narration.trim()).await?
+            if yt {
+                script::youtube_from_narration(&or, narration.trim(), cfg.minutes).await?
+            } else {
+                script::from_narration(&or, narration.trim()).await?
+            }
         } else if let Some(url) = &cli.url {
             println!("  fetching {url} ...");
             let text = extract::fetch_article(url).await?;
-            script::from_article(&or, &text).await?
+            if yt {
+                script::youtube_from_article(&or, &text, cfg.minutes).await?
+            } else {
+                script::from_article(&or, &text).await?
+            }
         } else {
             bail!("provide exactly one of --topic, --brief, --script, --url, or --from")
         };
@@ -248,6 +300,10 @@ async fn run(cli: &Cli) -> Result<()> {
             script.scenes.len(),
             script.narration.split_whitespace().count()
         );
+        if !script.chapters.is_empty() {
+            let est = script.narration.split_whitespace().count() as f64 / config::WORDS_PER_MINUTE;
+            println!("  {} chapters, ~{est:.1} min", script.chapters.len());
+        }
         let dir = cli
             .out
             .join(format!("{}_{}", timestamp(), slug(&script.title)));
@@ -259,6 +315,39 @@ async fn run(cli: &Cli) -> Result<()> {
     // Fold any legacy single-`cast` string (older resumed `script.json`) into `characters` so the
     // rest of the pipeline only deals with the multi-character/location model.
     script.normalize_entities();
+
+    // The effective format: fresh runs stamp the config's format into the script; resumed runs
+    // read it back from script.json so render geometry always matches the stored assets — a
+    // conflicting --format on resume is noted and deferred to the script's.
+    let format = if resume {
+        let stored = if script.format == "youtube" {
+            config::Format::Youtube
+        } else {
+            config::Format::Reel
+        };
+        if cli.format.is_some_and(|f| f != stored) {
+            eprintln!(
+                "  note: --format conflicts with this run folder's script.json; \
+                 using the script's format so geometry matches its assets"
+            );
+        }
+        stored
+    } else {
+        if cfg.format == config::Format::Youtube && script.format != "youtube" {
+            script.format = "youtube".to_string();
+        }
+        cfg.format
+    };
+    let canvas = config::canvas(format);
+    // The aspect the image/video APIs are asked for must track the effective format too.
+    or.aspect = canvas.aspect_str().to_string();
+    // ...and so must the video-model default. On a `--from` resume that omits `--format`, the
+    // config resolved the model from the (defaulted) reel format; re-derive the youtube default
+    // (Wan) from the stored format so rehydrating a youtube preview with --video uses the same
+    // model the first run would have. An explicit --video-model/env still wins.
+    if !cfg.video_model_explicit && format == config::Format::Youtube {
+        or.video_model = "alibaba/wan-2.6".to_string();
+    }
 
     // Voice: honor an explicit --voice/REELMAESTRO_VOICE; otherwise auto-pick a male/female
     // voice from the script's narrator gender.
@@ -295,52 +384,26 @@ async fn run(cli: &Cli) -> Result<()> {
         ffmpeg::silent_track(&audio, total)?;
         Vec::new()
     } else {
-        const TTS_ATTEMPTS: usize = 3;
-        const MIN_COVERAGE: f64 = 0.85; // re-synthesize if whisper heard < 85% of the script
-        let mut best: Option<(Vec<model::WordTiming>, f64, Vec<u8>)> = None;
-        for attempt in 1..=TTS_ATTEMPTS {
-            println!("→ synthesizing narration ({}) ...", or.tts_model);
-            tts::synthesize(&or, &script.narration, &audio, cli.speed).await?;
-            println!(
-                "→ timing narration ({} {}) ...",
-                cfg.whisper_cmd, cfg.whisper_model
+        // Synthesize the WHOLE narration in one TTS call — this keeps a single consistent voice
+        // for the entire video. (Generative TTS like Gemini re-samples the speaker on each
+        // independent call, so splitting a long-form narration per chapter makes the voice audibly
+        // change at chapter seams.) For long-form, if a single call still comes back truncated —
+        // a very long script can exceed the preview TTS output cap — fall back to per-chapter
+        // synthesis, trading a possible voice seam for a complete narration (the lesser evil).
+        println!("→ synthesizing narration ({}) ...", or.tts_model);
+        let (words, coverage) =
+            synthesize_with_coverage(&or, &cfg, &script.narration, &audio, &words_path, cli.speed)
+                .await?;
+        if !script.chapters.is_empty() && coverage < MIN_TTS_COVERAGE {
+            eprintln!(
+                "  note: single-call narration still truncated after retries; falling back to \
+                 per-chapter synthesis (the voice may vary slightly between chapters) ..."
             );
-            let t = transcribe::word_timings(&cfg, &audio, &script.narration, &words_path)?;
-            println!(
-                "  {} words timed (~{:.0}% of the script spoken)",
-                t.words.len(),
-                t.coverage * 100.0
-            );
-            // Keep the most complete take together with its audio so the two stay consistent.
-            if best
-                .as_ref()
-                .map(|(_, c, _)| t.coverage > *c)
-                .unwrap_or(true)
-            {
-                best = Some((t.words, t.coverage, std::fs::read(&audio)?));
-            }
-            if t.coverage >= MIN_COVERAGE {
-                break;
-            }
-            if attempt < TTS_ATTEMPTS {
-                eprintln!(
-                    "  note: narration audio looks truncated (preview TTS cut it short); \
-                     re-synthesizing ({}/{TTS_ATTEMPTS}) ...",
-                    attempt + 1
-                );
-            } else {
-                eprintln!(
-                    "  warning: narration still truncated after {TTS_ATTEMPTS} attempts; \
-                     using the most complete take"
-                );
-            }
+            synthesize_per_chapter(&or, &cfg, &script, &dir, &audio, &words_path, cli.speed).await?
+        } else {
+            std::fs::write(&words_path, serde_json::to_vec_pretty(&words)?)?;
+            words
         }
-        let (words, _, audio_bytes) = best.expect("at least one TTS attempt ran");
-        // The last synth on disk may have been a worse take — restore the best take's audio and its
-        // matching timings so everything downstream sees one consistent pair.
-        std::fs::write(&audio, &audio_bytes)?;
-        std::fs::write(&words_path, serde_json::to_vec_pretty(&words)?)?;
-        words
     };
 
     // Caption-timing test mode (fresh runs only): stop before any image/video/music calls.
@@ -395,9 +458,13 @@ async fn run(cli: &Cli) -> Result<()> {
                 );
             }
         }
-        let validate = cli.validate_scene; // 0 = off, 2/3 = candidates/scene
+        let validate = cfg.validate_scene; // 0 = off, 2/3 = candidates/scene
         if validate >= 2 {
-            println!("  scene validation on: up to {validate} candidates/scene, keeping the most consistent");
+            println!(
+                "  scene validation on: up to {validate} candidates/scene, keeping the most \
+                 consistent (judge: {})",
+                or.judge_model
+            );
         } else {
             println!("  scene validation off: one candidate/scene");
         }
@@ -409,6 +476,7 @@ async fn run(cli: &Cli) -> Result<()> {
             cli.character_ref.as_deref(),
             consistency,
             validate,
+            canvas,
             &dir,
         )
         .await?
@@ -432,7 +500,7 @@ async fn run(cli: &Cli) -> Result<()> {
                 "→ reusing {video_count} existing video clip(s) (delete a scene-NN.mp4 to regenerate it)"
             );
         } else {
-            let secs = video::billed_seconds_for(&durations, &to_make);
+            let secs = video::billed_seconds_for(&or.video_model, &durations, &to_make);
             let reused = video_count - to_make.len();
             let reuse_note = if reused > 0 {
                 format!(", reusing {reused}")
@@ -443,16 +511,18 @@ async fn run(cli: &Cli) -> Result<()> {
                 "→ generating {} video scene(s){reuse_note} ({}, ~{secs}s ≈ ${:.2}) ...",
                 to_make.len(),
                 or.video_model,
-                secs as f64 * 0.05
+                secs as f64 * config::video_cost_per_second(&or.video_model, &cfg.video_resolution)
             );
         }
         video::generate(
             &or,
             &script.scenes,
+            &script.characters,
+            &script.locations,
             &images,
             &durations,
             video_count,
-            &cli.video_resolution,
+            &cfg.video_resolution,
             &dir,
         )
         .await
@@ -485,7 +555,20 @@ async fn run(cli: &Cli) -> Result<()> {
         dissolve: !cli.no_dissolve,
         dissolve_seconds: cli.dissolve_seconds,
         grade: !cli.no_grade,
+        canvas,
+        caption_style: captions::CaptionStyle::for_format(format),
+        chapters: &script.chapters,
+        watermark: watermark.as_deref(),
     })?;
+
+    // Long-form: write upload-ready YouTube metadata (title, description, tags, chapter
+    // timestamps) alongside the video. Non-fatal.
+    if !script.chapters.is_empty() {
+        match metadata::write_youtube_md(&dir, &script, &durations) {
+            Ok(p) => println!("  metadata: {}", p.display()),
+            Err(e) => eprintln!("  note: writing youtube.md failed ({e})"),
+        }
+    }
 
     // 8. Poster — a custom, enticing thumbnail (non-fatal) --------------------
     // Generate a purpose-built cover image (clean, no captions). Resume reuses an existing
@@ -494,15 +577,22 @@ async fn run(cli: &Cli) -> Result<()> {
     if !(resume && poster.exists()) {
         println!("→ generating poster ({}) ...", or.image_model);
         let refs = poster_refs(&dir);
-        let concept = poster_concept(&script);
+        let concept = poster_concept(&script, format);
         let protagonist = script
             .characters
             .first()
             .map(|c| c.description.as_str())
             .unwrap_or("");
-        if images::generate_poster(&or, &concept, protagonist, &refs, &dir)
-            .await
-            .is_none()
+        if images::generate_poster(
+            &or,
+            &concept,
+            protagonist,
+            &refs,
+            config::poster_canvas(format),
+            &dir,
+        )
+        .await
+        .is_none()
         {
             eprintln!("  note: custom poster generation failed; using a reel frame instead");
             let t = poster_time(&durations, cli.poster_scene.unwrap_or(0));
@@ -527,6 +617,148 @@ async fn run(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Whisper coverage below this means the TTS take looks truncated — trigger a re-synthesis, and
+/// (for long-form) fall back from a single whole-narration call to per-chapter synthesis.
+const MIN_TTS_COVERAGE: f64 = 0.85;
+
+/// Synthesize `narration` to `audio_path`, retrying when the take looks truncated: up to 3
+/// attempts, keeping the take whisper heard the most of (audio and timings stay consistent as a
+/// pair). `words_scratch` is where whisper's per-take timing JSON lands — the caller decides
+/// whether that file is the run's words.json or a discarded scratch file. Returns the best
+/// take's word timings and the coverage of that take (so the caller can decide whether a single
+/// call was good enough or a fallback is warranted).
+async fn synthesize_with_coverage(
+    or: &OpenRouter,
+    cfg: &Config,
+    narration: &str,
+    audio_path: &std::path::Path,
+    words_scratch: &std::path::Path,
+    speed: f64,
+) -> Result<(Vec<model::WordTiming>, f64)> {
+    const TTS_ATTEMPTS: usize = 3;
+    let mut best: Option<(Vec<model::WordTiming>, f64, Vec<u8>)> = None;
+    for attempt in 1..=TTS_ATTEMPTS {
+        tts::synthesize(or, narration, audio_path, speed).await?;
+        let t = transcribe::word_timings(cfg, audio_path, narration, words_scratch)?;
+        println!(
+            "  {} words timed (~{:.0}% of the text spoken)",
+            t.words.len(),
+            t.coverage * 100.0
+        );
+        // Keep the most complete take together with its audio so the two stay consistent.
+        if best
+            .as_ref()
+            .map(|(_, c, _)| t.coverage > *c)
+            .unwrap_or(true)
+        {
+            best = Some((t.words, t.coverage, std::fs::read(audio_path)?));
+        }
+        if t.coverage >= MIN_TTS_COVERAGE {
+            break;
+        }
+        if attempt < TTS_ATTEMPTS {
+            eprintln!(
+                "  note: narration audio looks truncated (preview TTS cut it short); \
+                 re-synthesizing ({}/{TTS_ATTEMPTS}) ...",
+                attempt + 1
+            );
+        } else {
+            eprintln!(
+                "  warning: narration still truncated after {TTS_ATTEMPTS} attempts; \
+                 using the most complete take"
+            );
+        }
+    }
+    let (words, coverage, audio_bytes) = best.expect("at least one TTS attempt ran");
+    // The last synth on disk may have been a worse take — restore the best take's audio so
+    // downstream sees the take the returned timings describe.
+    std::fs::write(audio_path, &audio_bytes)?;
+    Ok((words, coverage))
+}
+
+/// Fallback long-form TTS: synthesize each chapter separately, concatenate, and time the joined
+/// track once. Used ONLY when a single whole-narration call truncated — per-chapter calls keep
+/// the truncation-retry loop working on ~1 minute of speech at a time, at the cost of possible
+/// voice drift between chapters (a generative TTS re-samples the speaker on each independent
+/// call, so the seams can shift). Preferred path is the single call, which keeps one voice.
+async fn synthesize_per_chapter(
+    or: &OpenRouter,
+    cfg: &Config,
+    script: &model::Script,
+    dir: &std::path::Path,
+    audio: &std::path::Path,
+    words_path: &std::path::Path,
+    speed: f64,
+) -> Result<Vec<model::WordTiming>> {
+    let scratch = dir.join(".words-scratch.json");
+    let mut parts: Vec<String> = Vec::new();
+    for (c, chapter) in script.chapters.iter().enumerate() {
+        println!(
+            "→ synthesizing chapter {}/{} ({}) ...",
+            c + 1,
+            script.chapters.len(),
+            or.tts_model
+        );
+        let name = format!("chapter-{c:02}.mp3");
+        synthesize_with_coverage(
+            or,
+            cfg,
+            &chapter.narration,
+            &dir.join(&name),
+            &scratch,
+            speed,
+        )
+        .await?;
+        parts.push(name);
+    }
+    let _ = std::fs::remove_file(&scratch);
+    // Concat into the exact file the caller named as `audio` (and that `transcribe` reads below),
+    // deriving the name from the path rather than hardcoding it so the two can't drift apart.
+    let audio_name = audio
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("audio.mp3");
+    ffmpeg::concat_audio(dir, &parts, audio_name)?;
+    // One whisper pass over the joined track gives the timeline-global word timings.
+    println!(
+        "→ timing narration ({} {}) ...",
+        cfg.whisper_cmd, cfg.whisper_model
+    );
+    let t = transcribe::word_timings(cfg, audio, &script.narration, words_path)?;
+    println!(
+        "  {} words timed (~{:.0}% of the script spoken)",
+        t.words.len(),
+        t.coverage * 100.0
+    );
+    std::fs::write(words_path, serde_json::to_vec_pretty(&t.words)?)?;
+    Ok(t.words)
+}
+
+/// Validate the `--watermark` path and resolve it to an absolute path (the render runs with the
+/// run folder as its working directory, so a relative path wouldn't resolve there). Fails fast on
+/// a missing/unreadable file, and warns — but does not fail — when the image has no alpha channel
+/// (it would overlay as an opaque rectangle rather than a transparent logo).
+fn resolve_watermark(path: &std::path::Path) -> Result<PathBuf> {
+    let abs = std::fs::canonicalize(path)
+        .with_context(|| format!("could not find watermark image {}", path.display()))?;
+    match image::open(&abs) {
+        Ok(img) => {
+            if !img.color().has_alpha() {
+                eprintln!(
+                    "  note: watermark {} has no alpha channel; it will overlay as an opaque \
+                     image (use a PNG with transparency for a clean logo)",
+                    abs.display()
+                );
+            }
+        }
+        Err(e) => bail!(
+            "could not read watermark {} as an image: {e}",
+            abs.display()
+        ),
+    }
+    Ok(abs)
+}
+
 /// Reference images for the poster: the character portrait (if any) so the poster's cast
 /// matches the reel. Empty when there's no recurring character.
 fn poster_refs(dir: &std::path::Path) -> Vec<String> {
@@ -538,8 +770,9 @@ fn poster_refs(dir: &std::path::Path) -> Vec<String> {
 }
 
 /// The poster image concept: the script's `poster_prompt`, or a fallback built from the hook
-/// scene for older runs that predate that field. Always nudged toward an enticing thumbnail.
-fn poster_concept(script: &model::Script) -> String {
+/// scene for older runs that predate that field. Always nudged toward an enticing thumbnail,
+/// in the format's aspect.
+fn poster_concept(script: &model::Script, format: config::Format) -> String {
     let base = if !script.poster_prompt.trim().is_empty() {
         script.poster_prompt.clone()
     } else {
@@ -553,10 +786,17 @@ fn poster_concept(script: &model::Script) -> String {
             script.title
         )
     };
-    format!(
-        "{base} A striking, high-contrast vertical thumbnail with an expressive focal subject \
-         and broad appeal that entices viewers to watch."
-    )
+    match format {
+        config::Format::Reel => format!(
+            "{base} A striking, high-contrast vertical thumbnail with an expressive focal \
+             subject and broad appeal that entices viewers to watch."
+        ),
+        config::Format::Youtube => format!(
+            "{base} A striking, high-contrast landscape 16:9 YouTube thumbnail with one \
+             expressive focal subject and a bold composition readable at small sizes, that \
+             entices viewers to click."
+        ),
+    }
 }
 
 /// Timestamp (seconds) of a scene's midpoint on the reel timeline — used to pick a poster
@@ -586,7 +826,11 @@ async fn resolve_music(
     }
     // Lyria bills a flat fee per track (unlike Veo's per-second cost), so the estimate is a
     // fixed figure rather than a computed one.
-    println!("→ generating soundtrack ({}, ~$0.08) ...", or.music_model);
+    println!(
+        "→ generating soundtrack ({}, ~${:.2}) ...",
+        or.music_model,
+        config::music_cost(&or.music_model)
+    );
     println!("  prompt: {music_prompt}");
 
     // Lyria is a flaky preview model, so retry a few times before giving up.

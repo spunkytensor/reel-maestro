@@ -1,29 +1,79 @@
 // Copyright 2026 Spunky Tensor
 // SPDX-License-Identifier: Apache-2.0
 
-//! Word timings -> an ASS subtitle file with big, bottom-anchored "word-burst" captions
-//! (1-3 words at a time), sized for a 1080x1920 vertical canvas.
+//! Word timings -> an ASS subtitle file with bottom-anchored "word-burst" captions
+//! (1-3 words at a time), styled per output format via [`CaptionStyle`].
 
+use crate::config::Format;
 use crate::model::WordTiming;
 
 const MAX_WORDS_PER_CARD: usize = 3; // keep cards short enough to read at a glance
 const MAX_GAP_S: f64 = 0.2; // start a new card when the silence between words exceeds this
 const FONT: &str = "DejaVu Sans"; // ships with the ffmpeg/libass image used to render
-const FONT_SIZE: u32 = 96; // large, in PlayRes (1080-wide) units, for thumb-readable text
+
+/// The format-dependent knobs of the caption look: the ASS PlayRes canvas the sizes are
+/// expressed in, the font size, and the bottom/side margins.
+pub struct CaptionStyle {
+    pub play_res_x: u32,
+    pub play_res_y: u32,
+    pub font_size: u32,
+    pub margin_v: u32,
+    pub margin_lr: u32,
+}
+
+impl CaptionStyle {
+    /// The caption look for an output format. Reel keeps the original thumb-readable style
+    /// (big text lifted well above phone UI); youtube scales it for a 16:9 canvas — smaller
+    /// text sitting lower-third, since there's no phone chrome to clear.
+    pub fn for_format(f: Format) -> Self {
+        match f {
+            Format::Reel => CaptionStyle {
+                play_res_x: 1080,
+                play_res_y: 1920,
+                font_size: 96,
+                margin_v: 520,
+                margin_lr: 80,
+            },
+            Format::Youtube => CaptionStyle {
+                play_res_x: 1920,
+                play_res_y: 1080,
+                font_size: 64,
+                margin_v: 100,
+                margin_lr: 80,
+            },
+        }
+    }
+}
 
 /// Build a complete `.ass` (Advanced SubStation Alpha) document for the given word timings.
 ///
 /// The result is one `[Script Info]`/`[V4+ Styles]` header followed by one `Dialogue:` line per
 /// caption card. ffmpeg's `subtitles`/libass filter burns it into the video. An empty `words`
 /// slice yields just the header (a valid file with no captions).
-pub fn build_ass(words: &[WordTiming]) -> String {
+pub fn build_ass(words: &[WordTiming], style: &CaptionStyle) -> String {
     let mut s = String::new();
-    s.push_str(&header());
+    s.push_str(&header(style));
     for card in pack_cards(words) {
         s.push_str(&dialogue(&card));
         s.push('\n');
     }
     s
+}
+
+/// The words whose spoken window starts inside `[start_s, end_s)`, shifted to segment-local
+/// time (clamped at 0). Used by chapter-chunked rendering: each segment burns its own ASS file,
+/// so the full-reel timings must be re-based to that segment's clock. A word straddling a
+/// boundary belongs to the segment containing its start.
+pub fn rebase(words: &[WordTiming], start_s: f64, end_s: f64) -> Vec<WordTiming> {
+    words
+        .iter()
+        .filter(|w| w.start_s >= start_s && w.start_s < end_s)
+        .map(|w| WordTiming {
+            word: w.word.clone(),
+            start_s: (w.start_s - start_s).max(0.0),
+            end_s: (w.end_s - start_s).max(0.0),
+        })
+        .collect()
 }
 
 /// One on-screen caption "burst": the text to show and the wall-clock window it's visible for.
@@ -81,24 +131,30 @@ fn pack_cards(words: &[WordTiming]) -> Vec<Card> {
     cards
 }
 
-/// The fixed ASS header: declares the 1080x1920 canvas and a single `Burst` style.
+/// The ASS header: declares the style's PlayRes canvas and a single `Burst` style.
 ///
 /// The `Style:` line encodes the caption look (libass field order, see the `Format:` line above
 /// it): white fill + black outline (ASS colours are `&HAABBGGRR`), Bold (-1), 6px outline with no
-/// shadow, Alignment 2 (bottom-centre), and `MarginV 520` to lift the text well above the very
-/// bottom edge so it clears phone UI / safe areas on the vertical canvas.
-fn header() -> String {
+/// shadow, Alignment 2 (bottom-centre), and the style's `MarginV` to lift the text off the very
+/// bottom edge (on the vertical canvas, well above phone UI / safe areas).
+fn header(style: &CaptionStyle) -> String {
     format!(
         "[Script Info]\n\
          ScriptType: v4.00+\n\
-         PlayResX: 1080\n\
-         PlayResY: 1920\n\
+         PlayResX: {}\n\
+         PlayResY: {}\n\
          WrapStyle: 0\n\n\
          [V4+ Styles]\n\
          Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-         Style: Burst,{FONT},{FONT_SIZE},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,80,80,520,1\n\n\
+         Style: Burst,{FONT},{},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,{},{},{},1\n\n\
          [Events]\n\
-         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        style.play_res_x,
+        style.play_res_y,
+        style.font_size,
+        style.margin_lr,
+        style.margin_lr,
+        style.margin_v,
     )
 }
 
@@ -167,9 +223,41 @@ mod tests {
 
     #[test]
     fn build_ass_has_header_and_events() {
-        let ass = build_ass(&[w("hi", 0.0, 0.5)]);
+        let style = CaptionStyle::for_format(crate::config::Format::Reel);
+        let ass = build_ass(&[w("hi", 0.0, 0.5)], &style);
+        // Reel keeps the original header values exactly.
         assert!(ass.contains("PlayResX: 1080"));
+        assert!(ass.contains("PlayResY: 1920"));
+        assert!(ass.contains("Style: Burst,DejaVu Sans,96,"));
+        assert!(ass.contains(",80,80,520,1"));
         assert!(ass.contains("Dialogue: 0,0:00:00.00,0:00:00.50,Burst"));
         assert!(ass.contains("HI"));
+    }
+
+    #[test]
+    fn youtube_style_is_landscape_lower_third() {
+        let style = CaptionStyle::for_format(crate::config::Format::Youtube);
+        let ass = build_ass(&[w("hi", 0.0, 0.5)], &style);
+        assert!(ass.contains("PlayResX: 1920"));
+        assert!(ass.contains("PlayResY: 1080"));
+        assert!(ass.contains("Style: Burst,DejaVu Sans,64,"));
+        assert!(ass.contains(",80,80,100,1"));
+    }
+
+    #[test]
+    fn rebase_shifts_and_filters_to_window() {
+        let words = vec![
+            w("before", 1.0, 1.4),
+            w("first", 10.0, 10.5),
+            w("straddle", 19.8, 20.4), // starts inside → kept, even though it ends past the window
+            w("after", 20.6, 21.0),
+        ];
+        let out = rebase(&words, 10.0, 20.0);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].word, "first");
+        assert!((out[0].start_s - 0.0).abs() < 1e-9);
+        assert!((out[0].end_s - 0.5).abs() < 1e-9);
+        assert_eq!(out[1].word, "straddle");
+        assert!((out[1].start_s - 9.8).abs() < 1e-9);
     }
 }
