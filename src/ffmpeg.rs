@@ -68,7 +68,10 @@ pub fn duration_s(path: &Path) -> Result<f64> {
         .parse::<f64>()
         .with_context(|| format!("could not parse duration from ffprobe output: {text:?}"))?;
     if !duration.is_finite() || duration <= 0.0 {
-        bail!("ffprobe returned invalid duration {duration:?} for {}", path.display());
+        bail!(
+            "ffprobe returned invalid duration {duration:?} for {}",
+            path.display()
+        );
     }
     Ok(duration)
 }

@@ -433,7 +433,7 @@ impl OpenRouter {
                         VideoStatus::Done(content_url) => {
                             return self.download_video(&content_url).await
                         }
-                    }
+                    },
                 }
             }
 
@@ -548,7 +548,10 @@ impl OpenRouter {
     /// success yields a content URL (preferring `unsigned_urls[0]`, else one built from the
     /// job id); any not-yet-terminal status maps to `Pending` so the caller keeps polling.
     async fn poll_video(&self, polling_url: &str) -> Result<VideoStatus> {
-        let resp = self.safe_video_get(polling_url, "video polling URL").send().await?;
+        let resp = self
+            .safe_video_get(polling_url, "video polling URL")?
+            .send()
+            .await?;
         let v = json_or_err(resp).await?;
         match v["status"].as_str().unwrap_or("") {
             "completed" | "succeeded" => {
@@ -570,7 +573,10 @@ impl OpenRouter {
 
     /// Download the finished MP4 bytes from a completed job's content URL.
     async fn download_video(&self, content_url: &str) -> Result<Vec<u8>> {
-        let resp = self.safe_video_get(content_url, "video content URL").send().await?;
+        let resp = self
+            .safe_video_get(content_url, "video content URL")?
+            .send()
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             bail!(
@@ -739,9 +745,7 @@ fn describe_video_error(v: &Value) -> String {
 /// can handle them without accidentally buying a different kind of clip.
 fn is_provider_field_rejection(err: &anyhow::Error) -> bool {
     let msg = err.to_string().to_lowercase();
-    let is_known_field_4xx = ["(400", "(422"]
-        .iter()
-        .any(|needle| msg.contains(needle));
+    let is_known_field_4xx = ["(400", "(422"].iter().any(|needle| msg.contains(needle));
     if !is_known_field_4xx || msg.contains("(429") || msg.contains("(5") {
         return false;
     }
@@ -1087,15 +1091,15 @@ mod tests {
 
     #[test]
     fn video_urls_must_be_public_https() {
-        assert!(validate_public_https_url(
-            "https://openrouter.ai/api/v1/videos/job",
-            "test URL"
-        )
-        .is_ok());
-        assert!(validate_public_https_url("https://cdn.example.com/video.mp4", "test URL")
-            .is_ok());
-        assert!(validate_public_https_url("http://openrouter.ai/api/v1/videos/job", "test URL")
-            .is_err());
+        assert!(
+            validate_public_https_url("https://openrouter.ai/api/v1/videos/job", "test URL")
+                .is_ok()
+        );
+        assert!(validate_public_https_url("https://cdn.example.com/video.mp4", "test URL").is_ok());
+        assert!(
+            validate_public_https_url("http://openrouter.ai/api/v1/videos/job", "test URL")
+                .is_err()
+        );
         assert!(validate_public_https_url("https://localhost/video.mp4", "test URL").is_err());
         assert!(validate_public_https_url("https://127.0.0.1/video.mp4", "test URL").is_err());
         assert!(validate_public_https_url("https://10.0.0.4/video.mp4", "test URL").is_err());

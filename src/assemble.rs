@@ -148,16 +148,16 @@ fn validate_build_inputs(opts: &BuildOptions<'_>) -> Result<()> {
             opts.clips.len()
         );
     }
-    for (i, image) in opts.images.iter().enumerate() {
-        if !image.exists() {
-            bail!("scene {i} image does not exist: {}", image.display());
-        }
-    }
     for (i, clip) in opts.clips.iter().enumerate() {
         if let Some(clip) = clip {
             if !clip.exists() {
                 bail!("scene {i} video clip does not exist: {}", clip.display());
             }
+        } else if !opts.images[i].exists() {
+            bail!(
+                "scene {i} image does not exist: {}",
+                opts.images[i].display()
+            );
         }
     }
     Ok(())

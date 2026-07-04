@@ -55,9 +55,10 @@ pub async fn fetch_article(url: &str) -> Result<String> {
                 .with_context(|| format!("invalid redirect target {loc:?} from {current}"))?;
             continue;
         }
-        resp = Some(r.error_for_status().with_context(|| {
-            format!("server returned an error for {current}")
-        })?);
+        resp = Some(
+            r.error_for_status()
+                .with_context(|| format!("server returned an error for {current}"))?,
+        );
         break;
     }
     let resp = resp.ok_or_else(|| anyhow::anyhow!("too many redirects while fetching {url}"))?;

@@ -240,7 +240,10 @@ async fn run(cli: &Cli) -> Result<()> {
         bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
     }
     if !cli.music_volume.is_finite() || cli.music_volume < 0.0 {
-        bail!("--music-volume must be finite and non-negative (got {})", cli.music_volume);
+        bail!(
+            "--music-volume must be finite and non-negative (got {})",
+            cli.music_volume
+        );
     }
     if !cli.dissolve_seconds.is_finite() || cli.dissolve_seconds < 0.0 {
         bail!(
@@ -249,7 +252,11 @@ async fn run(cli: &Cli) -> Result<()> {
         );
     }
     validate_local_inputs(cli)?;
-    let needs_api = cli.from.is_none() || cli.video || cli.video_scenes.is_some() || cli.music_gen || cli.poster_scene.is_some();
+    let needs_api = cli.from.is_none()
+        || cli.video
+        || cli.video_scenes.is_some()
+        || cli.music_gen
+        || cli.poster_scene.is_some();
     let cfg = Config::load(cli, needs_api)?;
     let mut or = OpenRouter::new(&cfg)?;
 
@@ -919,7 +926,9 @@ async fn resolve_music(
             .is_some_and(|(src, dst)| src == dst);
         if !same_file {
             if let Err(e) = std::fs::copy(file, &dest) {
-                eprintln!("  note: could not persist soundtrack in run folder ({e}); using original path");
+                eprintln!(
+                    "  note: could not persist soundtrack in run folder ({e}); using original path"
+                );
                 return Some(file.clone());
             }
         }

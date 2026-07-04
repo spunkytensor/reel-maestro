@@ -21,7 +21,7 @@ fi
 if ! command -v cargo >/dev/null 2>&1; then
   echo "==> Installing Rust toolchain via rustup"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain 1.88.0 --profile minimal --component clippy rustfmt
+    | sh -s -- -y --default-toolchain 1.88.0 --profile minimal --component clippy --component rustfmt
 fi
 # shellcheck disable=SC1090,SC1091
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"

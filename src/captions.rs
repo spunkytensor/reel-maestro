@@ -254,7 +254,10 @@ mod tests {
     #[test]
     fn dialogue_escapes_ass_control_syntax_and_control_chars() {
         let style = CaptionStyle::for_format(crate::config::Format::Reel);
-        let ass = build_ass(&[w(r"{tag}\path", 0.0, 0.5), w("bad\nchar\t", 0.5, 1.0)], &style);
+        let ass = build_ass(
+            &[w(r"{tag}\path", 0.0, 0.5), w("bad\nchar\t", 0.5, 1.0)],
+            &style,
+        );
         assert!(ass.contains(r"\{TAG\}\\PATH"));
         assert!(ass.contains("BAD CHAR "));
         assert!(!ass.contains("BAD\nCHAR"));
