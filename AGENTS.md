@@ -63,6 +63,10 @@ cargo test video_mode_smoke -- --ignored --nocapture
 When user-facing flags, env vars, costs, output files, or release processes change, update
 `README.md`, `.env.example`, and `CONTRIBUTING.md` as applicable.
 
+When opening a pull request, fill out `.github/pull_request_template.md` completely: include a
+real summary, list every relevant check that was run or explain why it could not run, mark the API
+calls/costs and attribution/licensing checkboxes accurately, and complete each details section.
+
 CI also checks dependency policy with `cargo deny check` and generates Rust supply-chain artifacts
 with `cargo audit --json` and `cargo cyclonedx --format json --spec-version 1.5`; keep those
 workflow commands in sync with `CONTRIBUTING.md` if the tooling changes.
