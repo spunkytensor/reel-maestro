@@ -1,0 +1,13 @@
+# cargo-audit config. Unlike cargo-deny, cargo-audit can ONLY ignore advisories by ID (no
+# by-crate ignores), so the quinn/QUIC entries below must be maintained here by hand.
+#
+# The quinn stack (quinn, quinn-proto, quinn-udp) is an OPTIONAL dependency of reqwest's `http3`
+# feature, which we do not enable — it is pinned in Cargo.lock but never compiled into the binary
+# (`cargo tree -i quinn-proto --target all` is empty). We keep it patched to current versions, but
+# ignore its advisories so an unused, never-linked QUIC CVE can't fail CI. deny.toml ignores these
+# by crate; here, add each new RUSTSEC id for a quinn crate as it appears. Revisit if we ever
+# enable reqwest's `http3` feature.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0185",  # quinn-proto memory exhaustion (also patched via 0.11.15 bump)
+]
