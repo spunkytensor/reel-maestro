@@ -37,9 +37,10 @@ cargo package --locked
 cargo run -- --help
 ```
 
-Use `cargo fmt --all` to format the entire workspace before handing work back. Use
-`cargo fmt --all --check` only when verifying that formatting is already correct, such as in
-CI. Do not manually reflow Rust code that `rustfmt` can format.
+Always run `cargo fmt --all` locally before committing Rust or generated Rust-adjacent changes;
+do not rely on GitHub CI minutes to catch formatting drift. Use `cargo fmt --all --check` only
+when verifying that formatting is already correct, such as in CI. Do not manually reflow Rust code
+that `rustfmt` can format.
 
 Ignored render-path checks require `ffmpeg`/`ffprobe` and produce temporary media:
 
