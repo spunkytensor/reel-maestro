@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Reel Maestro orb resume.
+# Amp runs this from the repo root each time a paused orb wakes up.
+# Keep it fast (Amp blocks for at most 10s) and idempotent. Do NOT install
+# dependencies here; that belongs in .agents/setup.
+set -euo pipefail
+
+# Make the Rust toolchain available in this shell if setup installed it.
+# shellcheck disable=SC1090,SC1091
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+# Ensure a local env file still exists (never overwrite real secrets).
+[ -f .env ] || cp -n .env.example .env 2>/dev/null || true
+
+# Ensure the output scratch directory exists for generated media.
+mkdir -p out
+
+exit 0
