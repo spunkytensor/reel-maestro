@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::config::Config;
 
 const BASE: &str = "https://openrouter.ai/api/v1";
+const MAX_CONSECUTIVE_POLL_FAILURES: usize = 3;
 
 /// Audio returned by text-to-speech, tagged with its container format.
 pub struct Speech {
@@ -406,16 +407,30 @@ impl OpenRouter {
             // Poll until done. Jobs take ~30s–several minutes; cap at ~10 minutes.
             let max_polls = 30;
             let mut failure: Option<String> = None;
+            let mut consecutive_poll_failures = 0;
             for _ in 0..max_polls {
                 tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                 match self.poll_video(&polling_url).await? {
-                    VideoStatus::Pending => continue,
-                    VideoStatus::Failed(msg) => {
-                        failure = Some(msg);
-                        break;
+                    PollVideoResult::Status(status) => {
+                        consecutive_poll_failures = 0;
+                        match status {
+                            VideoStatus::Pending => continue,
+                            VideoStatus::Failed(msg) => {
+                                failure = Some(msg);
+                                break;
+                            }
+                            VideoStatus::Done(content_url) => {
+                                return self.download_video(&content_url).await
+                            }
+                        }
                     }
-                    VideoStatus::Done(content_url) => {
-                        return self.download_video(&content_url).await
+                    PollVideoResult::Transient(e) => {
+                        consecutive_poll_failures += 1;
+                        if should_retry_poll(consecutive_poll_failures) {
+                            eprintln!("    poll failed ({e:#}); retrying ...");
+                            continue;
+                        }
+                        return Err(e);
                     }
                 }
             }
@@ -527,17 +542,39 @@ impl OpenRouter {
         Ok(format!("{BASE}/videos/{id}"))
     }
 
-    /// Poll a video job once and map its provider status to our `VideoStatus`. Terminal
-    /// success yields a content URL (preferring `unsigned_urls[0]`, else one built from the
-    /// job id); any not-yet-terminal status maps to `Pending` so the caller keeps polling.
-    async fn poll_video(&self, polling_url: &str) -> Result<VideoStatus> {
-        let resp = self
+    /// Poll a video job once. HTTP 4xx responses are permanent and returned as errors; network,
+    /// server, and JSON failures are transient so the caller can retry the same job. Terminal
+    /// success yields a content URL (preferring `unsigned_urls[0]`, else one built from the job
+    /// id); any not-yet-terminal status maps to `Pending` so the caller keeps polling.
+    async fn poll_video(&self, polling_url: &str) -> Result<PollVideoResult> {
+        let resp = match self
             .http
             .get(polling_url)
             .bearer_auth(&self.api_key)
             .send()
-            .await?;
-        let v = json_or_err(resp).await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => return Ok(PollVideoResult::Transient(e.into())),
+        };
+        let status = resp.status();
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(e) => return Ok(PollVideoResult::Transient(e.into())),
+        };
+        if !status.is_success() {
+            let e = anyhow!("OpenRouter request failed ({status}): {text}");
+            if status.is_client_error() {
+                return Err(e);
+            }
+            return Ok(PollVideoResult::Transient(e));
+        }
+        let v: Value = match serde_json::from_str(&text)
+            .with_context(|| format!("invalid JSON from OpenRouter: {text}"))
+        {
+            Ok(v) => v,
+            Err(e) => return Ok(PollVideoResult::Transient(e)),
+        };
         match v["status"].as_str().unwrap_or("") {
             "completed" | "succeeded" => {
                 let url = v["unsigned_urls"][0]
@@ -548,11 +585,16 @@ impl OpenRouter {
                             .as_str()
                             .map(|id| format!("{BASE}/videos/{id}/content?index=0"))
                     })
-                    .ok_or_else(|| anyhow!("completed video job had no content url: {v}"))?;
-                Ok(VideoStatus::Done(url))
+                    .ok_or_else(|| anyhow!("completed video job had no content url: {v}"));
+                match url {
+                    Ok(url) => Ok(PollVideoResult::Status(VideoStatus::Done(url))),
+                    Err(e) => Ok(PollVideoResult::Transient(e)),
+                }
             }
-            "failed" | "cancelled" | "expired" => Ok(VideoStatus::Failed(describe_video_error(&v))),
-            _ => Ok(VideoStatus::Pending),
+            "failed" | "cancelled" | "expired" => Ok(PollVideoResult::Status(VideoStatus::Failed(
+                describe_video_error(&v),
+            ))),
+            _ => Ok(PollVideoResult::Status(VideoStatus::Pending)),
         }
     }
 
@@ -641,6 +683,18 @@ enum VideoStatus {
     Pending,
     Done(String),
     Failed(String),
+}
+
+/// Outcome of polling a video job. Permanent HTTP client errors are returned directly from
+/// `poll_video`; this carries failures that can be retried without abandoning the submitted job.
+enum PollVideoResult {
+    Status(VideoStatus),
+    Transient(anyhow::Error),
+}
+
+/// Whether a transient poll failure is still below the consecutive-failure limit.
+fn should_retry_poll(consecutive_failures: usize) -> bool {
+    consecutive_failures < MAX_CONSECUTIVE_POLL_FAILURES
 }
 
 /// Build the most informative failure string we can from a terminal video-job response. Veo (and
@@ -832,6 +886,13 @@ mod tests {
         assert_eq!(backoff_secs(1), 2);
         assert_eq!(backoff_secs(2), 5);
         assert_eq!(backoff_secs(3), 5);
+    }
+
+    #[test]
+    fn poll_retries_only_before_the_consecutive_failure_limit() {
+        assert!(should_retry_poll(1));
+        assert!(should_retry_poll(MAX_CONSECUTIVE_POLL_FAILURES - 1));
+        assert!(!should_retry_poll(MAX_CONSECUTIVE_POLL_FAILURES));
     }
 
     #[test]
