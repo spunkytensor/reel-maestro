@@ -126,43 +126,59 @@ pub fn poster_frame(reel: &Path, out: &Path, at_s: f64) -> Result<()> {
 /// filenames relative to it.
 pub fn embed_poster(dir: &Path, reel: &str, poster: &str) -> Result<()> {
     let tmp = "reel-poster.mp4";
+    let tmp_path = dir.join(tmp);
+    let reel_path = dir.join(reel);
     // Map only the main video (0:V:0 excludes any existing attached_pic) + audio, then add the
     // poster — so re-running on an already-embedded reel replaces the cover art rather than
     // accumulating extra streams.
-    let out = Command::new("ffmpeg")
-        .current_dir(dir)
-        .args([
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            reel,
-            "-i",
-            poster,
-            "-map",
-            "0:V:0",
-            "-map",
-            "0:a?",
-            "-map",
-            "1",
-            "-c",
-            "copy",
-            "-disposition:v:1",
-            "attached_pic",
-            tmp,
-        ])
-        .output()
-        .context("failed to launch ffmpeg to embed poster")?;
-    if !out.status.success() {
-        let _ = std::fs::remove_file(dir.join(tmp));
-        bail!(
-            "ffmpeg poster embed failed:\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+    clean_up_temp_on_error(&tmp_path, || {
+        let out = Command::new("ffmpeg")
+            .current_dir(dir)
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                reel,
+                "-i",
+                poster,
+                "-map",
+                "0:V:0",
+                "-map",
+                "0:a?",
+                "-map",
+                "1",
+                "-c",
+                "copy",
+                "-disposition:v:1",
+                "attached_pic",
+                tmp,
+            ])
+            .output()
+            .context("failed to launch ffmpeg to embed poster")?;
+        if !out.status.success() {
+            bail!(
+                "ffmpeg poster embed failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        std::fs::rename(&tmp_path, &reel_path).with_context(|| {
+            format!(
+                "renaming {} over {}",
+                tmp_path.display(),
+                reel_path.display()
+            )
+        })
+    })
+}
+
+/// Remove a temporary file when its producing operation fails.
+fn clean_up_temp_on_error<T>(tmp: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let result = operation();
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
     }
-    std::fs::rename(dir.join(tmp), dir.join(reel))
-        .context("could not replace reel with poster-embedded version")?;
-    Ok(())
+    result
 }
 
 /// A scene's visual source: a still (animated with Ken Burns) or a pre-made video clip.
@@ -852,8 +868,9 @@ fn run_ffmpeg_in(dir: &Path, args: &[String], what: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clip_chain, still_chain, watermark_parts};
+    use super::{clean_up_temp_on_error, clip_chain, still_chain, watermark_parts};
     use crate::config::Canvas;
+    use anyhow::Context;
 
     const REEL: Canvas = Canvas { w: 1080, h: 1920 };
     const YT: Canvas = Canvas { w: 1920, h: 1080 };
@@ -907,5 +924,29 @@ mod tests {
         let c = clip_chain(YT, 0, 1.0, 4.0, "", "");
         assert!(c.contains("scale=1920:1080:force_original_aspect_ratio=increase"));
         assert!(c.contains("crop=1920:1080"));
+    }
+
+    #[test]
+    fn rename_failure_removes_poster_temp_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "reelmaestro_poster_rename_failure_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("reel-poster.mp4");
+        let reel = dir.join("reel.mp4");
+        std::fs::write(&tmp, b"temporary poster reel").unwrap();
+        std::fs::create_dir(&reel).unwrap();
+
+        let err = clean_up_temp_on_error(&tmp, || {
+            std::fs::rename(&tmp, &reel)
+                .with_context(|| format!("renaming {} over {}", tmp.display(), reel.display()))
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("renaming"));
+        assert!(!tmp.exists(), "failed rename left {tmp:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
