@@ -1408,4 +1408,89 @@ mod tests {
         assert!((ffmpeg::duration_s(&reel).unwrap() - 6.0).abs() < 1.0);
         println!("poster_smoke OK -> poster.jpg 1080x1920 + embedded cover art");
     }
+
+    // Review defect #15: document scene-window edge cases for the defect #4 timing fix.
+    #[test]
+    fn scene_windows_document_word_mapping_fallbacks_and_duration_floor() {
+        let scene = |line: &str| Scene {
+            line: line.into(),
+            image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: String::new(),
+            motion_prompt: String::new(),
+        };
+        let word = |text: &str, start_s: f64, end_s: f64| WordTiming {
+            word: text.into(),
+            start_s,
+            end_s,
+        };
+
+        // Matching scene and timing word counts snap each cut to the next word's timestamp.
+        let scenes = vec![scene("one"), scene("two three"), scene("four")];
+        let words = vec![
+            word("one", 0.0, 0.2),
+            word("two", 0.3, 0.4),
+            word("three", 0.5, 0.6),
+            word("four", 1.7, 2.0),
+        ];
+        let windows = scene_windows(&scenes, &words, 2.0);
+        assert_eq!(
+            windows,
+            vec![
+                (0.0, words[1].start_s),
+                (words[1].start_s, words[3].start_s),
+                (words[3].start_s, 2.0),
+            ]
+        );
+
+        // A count mismatch maps boundaries proportionally into the available timed words.
+        let scenes = vec![scene("one two three"), scene("four five"), scene("six")];
+        let words = vec![
+            word("one", 0.0, 0.1),
+            word("two", 0.5, 0.6),
+            word("three", 1.0, 1.1),
+            word("four", 1.5, 1.6),
+        ];
+        let windows = scene_windows(&scenes, &words, 2.0);
+        assert_eq!(windows, vec![(0.0, 1.0), (1.0, 1.5), (1.5, 2.0)]);
+        assert!(windows.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+        assert_eq!(windows.last().unwrap().1, 2.0);
+
+        // Empty lines currently claim one word share and can push the later scene forward.
+        let scenes = vec![scene("one"), scene(""), scene("two three four")];
+        let words = vec![
+            word("one", 0.0, 0.1),
+            word("two", 1.0, 1.1),
+            word("three", 2.0, 2.1),
+            word("four", 3.0, 3.1),
+        ];
+        let windows = scene_windows(&scenes, &words, 4.0);
+        // TODO(review #4): Empty lines should receive zero word share, making this 1.0.
+        assert_eq!(windows[2].0, 2.0);
+
+        // No timings use word-count proportions rather than timestamp boundaries.
+        let scenes = vec![scene("one"), scene("two three")];
+        assert_eq!(
+            scene_windows(&scenes, &[], 3.0),
+            vec![(0.0, 1.0), (1.0, 3.0)]
+        );
+
+        // More than 15% zero-duration timings are rejected in favor of the same proportion.
+        let words = vec![word("one", 0.0, 0.5), word("two", 0.5, 0.5)];
+        assert_eq!(
+            scene_windows(&scenes, &words, 3.0),
+            vec![(0.0, 1.0), (1.0, 3.0)]
+        );
+
+        // The per-scene 0.5s floor can currently make the rendered scene durations exceed audio.
+        let scenes = vec![scene("one"), scene(&"two ".repeat(100))];
+        let windows = scene_windows(&scenes, &[], 1.0);
+        let floored_total: f64 = windows
+            .iter()
+            .map(|(start, end)| (end - start).max(0.5))
+            .sum();
+        // TODO(review #4): Scene durations should sum to the audio total after floor handling.
+        assert!(floored_total > 1.0, "floored total was {floored_total}");
+    }
 }

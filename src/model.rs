@@ -162,3 +162,21 @@ impl Script {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::WordTiming;
+
+    #[test]
+    fn words_json_requires_valid_word_timings_and_round_trips() {
+        let valid = br#"[{"word":"hello","start_s":0.0,"end_s":0.5}]"#;
+        let words: Vec<WordTiming> = serde_json::from_slice(valid).unwrap();
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].word, "hello");
+        assert_eq!(words[0].start_s, 0.0);
+        assert_eq!(words[0].end_s, 0.5);
+        assert_eq!(serde_json::to_vec(&words).unwrap(), valid);
+
+        assert!(serde_json::from_slice::<Vec<WordTiming>>(br#"not json"#).is_err());
+    }
+}
