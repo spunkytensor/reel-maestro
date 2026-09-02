@@ -734,14 +734,7 @@ async fn build_location_ref(
         "  building location reference \"{}\": {}",
         entity.id, entity.description
     );
-    let prompt = format!(
-        "A clear establishing photograph of this location with NO people in frame, with the \
-         location's main repeated furniture/setting (e.g. a representative two-person table) shown \
-         clearly in the foreground. Render every repeated element identically and EXACTLY as \
-         described — same surfaces, same settings, same props — so the image is an internally \
-         consistent, unambiguous reference: {}. Vertical 9:16, sharp focus, cinematic lighting.",
-        entity.description
-    );
+    let prompt = build_location_ref_prompt(entity, canvas);
     let img = generate_one(
         or,
         &prompt,
@@ -761,6 +754,28 @@ async fn build_location_ref(
         .map(|b| openrouter::data_url_from_image(&b))
 }
 
+/// Describe the requested image orientation from its output canvas.
+fn aspect_phrase(canvas: Canvas) -> &'static str {
+    if canvas.w > canvas.h {
+        "landscape 16:9"
+    } else {
+        "vertical 9:16"
+    }
+}
+
+/// Assemble a location's establishing reference prompt without I/O for focused testing.
+fn build_location_ref_prompt(entity: &Entity, canvas: Canvas) -> String {
+    format!(
+        "A clear establishing photograph of this location with NO people in frame, with the \
+         location's main repeated furniture/setting (e.g. a representative two-person table) shown \
+         clearly in the foreground. Render every repeated element identically and EXACTLY as \
+         described — same surfaces, same settings, same props — so the image is an internally \
+         consistent, unambiguous reference: {}. {}, sharp focus, cinematic lighting.",
+        entity.description,
+        aspect_phrase(canvas)
+    )
+}
+
 /// Assemble the text prompt for one image generation. Pure (no I/O) so the branch logic is
 /// unit-testable. `people`/`location` are the recurring entities in this scene (for the canonical
 /// text lock); `references` are the attached anchor images, listed in attachment order.
@@ -775,11 +790,7 @@ fn build_image_prompt(
     narration_line: &str,
     canvas: Canvas,
 ) -> String {
-    let aspect = if canvas.w > canvas.h {
-        "landscape 16:9"
-    } else {
-        "vertical 9:16"
-    };
+    let aspect = aspect_phrase(canvas);
     // An explicit instruction makes image-output models far less likely to reply with text, and
     // the screen/UI clause heads off the two classic device failure modes: garbled on-screen
     // interfaces and a display painted onto the wrong face of a monitor.
@@ -965,7 +976,10 @@ fn placeholder(idx: usize, canvas: Canvas) -> RgbImage {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_image_prompt, judge_instruction, location_anchors, slug, Reference};
+    use super::{
+        build_image_prompt, build_location_ref_prompt, judge_instruction, location_anchors, slug,
+        Reference,
+    };
     use crate::config::Canvas;
     use crate::model::{Entity, Scene};
 
@@ -1083,6 +1097,13 @@ mod tests {
             assert!(p.contains("do not render any user interface"));
             assert!(p.contains("device's FRONT face"));
         }
+    }
+
+    #[test]
+    fn location_reference_aspect_tracks_canvas() {
+        let location = ent("bistro", "exposed brick, brass lights, amber palette");
+        assert!(build_location_ref_prompt(&location, REEL).contains("vertical 9:16"));
+        assert!(build_location_ref_prompt(&location, YT).contains("landscape 16:9"));
     }
 
     #[test]
