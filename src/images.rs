@@ -160,22 +160,26 @@ pub async fn generate(
     // Phase 2: each location's remaining scenes, conditioned on that location's anchor image.
     let done2: Vec<(usize, PathBuf)> = stream::iter((0..n).filter(|&i| !is_phase1(i)))
         .map(|i| async move {
-            let chained: Vec<Reference> = anchor_url
-                .get(scenes[i].location_id.trim())
-                .map(|url| {
-                    vec![Reference {
-                        label: "PRIOR PHOTO of this exact location — match its room, table surface, \
-                                furniture, lighting, background, and overall layout. SEATING MUST \
-                                STAY CONSISTENT: keep each recurring person who also appears here on \
-                                the SAME side of the table / in the SAME position as in this photo \
-                                (do NOT swap their left/right sides between scenes); seat any \
-                                newly-added person in a remaining seat. Do not copy in any extra or \
-                                ghost people who are not in the PERSON references above"
-                            .to_string(),
-                        data_url: url.clone(),
-                    }]
-                })
-                .unwrap_or_default();
+            let location_id = scenes[i].location_id.trim();
+            let chained: Vec<Reference> = match anchor_url.get(location_id) {
+                Some(url) => vec![Reference {
+                    label: "PRIOR PHOTO of this exact location — match its room, table surface, \
+                            furniture, lighting, background, and overall layout. SEATING MUST \
+                            STAY CONSISTENT: keep each recurring person who also appears here on \
+                            the SAME side of the table / in the SAME position as in this photo \
+                            (do NOT swap their left/right sides between scenes); seat any \
+                            newly-added person in a remaining seat. Do not copy in any extra or \
+                            ghost people who are not in the PERSON references above"
+                        .to_string(),
+                    data_url: url.clone(),
+                }],
+                None => {
+                    eprintln!(
+                        "  note: no rendered anchor for location \"{location_id}\"; scene {i} will rely on its text description"
+                    );
+                    Vec::new()
+                }
+            };
             (i, render_scene(ctx, i, &scenes[i], &chained).await)
         })
         .buffer_unordered(MAX_CONCURRENT)
@@ -185,10 +189,14 @@ pub async fn generate(
         out[i] = Some(p);
     }
 
-    Ok(out
-        .into_iter()
-        .map(|p| p.expect("every scene rendered"))
-        .collect())
+    out.into_iter()
+        .enumerate()
+        .map(|(i, path)| {
+            path.ok_or_else(|| {
+                anyhow::anyhow!("internal error: scene {i} was not rendered by either phase")
+            })
+        })
+        .collect()
 }
 
 /// Render one scene to `scene-NN.jpg` and return its path. Conditions on the recurring entities it
