@@ -187,6 +187,14 @@ pub struct Cli {
     whisper_model: Option<String>,
     #[arg(long)]
     video_model: Option<String>,
+
+    /// Print an itemized upper-bound cost estimate and exit before any paid API call.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Abort before paid API calls when the projected estimate exceeds this USD amount.
+    #[arg(long, value_name = "USD")]
+    max_cost: Option<f64>,
 }
 
 /// Parse `--validate-scene`: `off` → 0 (validation disabled, one candidate); `2`/`3` → that many
@@ -199,6 +207,71 @@ pub(crate) fn parse_validate_scene(s: &str) -> Result<usize, String> {
         "3" => Ok(3),
         _ => Err(format!("expected `off`, `2`, or `3` (got {s:?})")),
     }
+}
+
+/// Upper-bound paid-work estimate available before a fresh script has established exact scenes
+/// and durations. Reels use their usual one-minute maximum planning window; YouTube uses its
+/// requested duration. Video seconds are snapped through the same billing rules as generation.
+fn preflight_cost_estimate(cli: &Cli, cfg: &Config) -> config::CostEstimate {
+    let minutes = match cfg.format {
+        config::Format::Reel => 1.0,
+        config::Format::Youtube => cfg.minutes,
+    };
+    let word_count = if cfg.no_narration {
+        0
+    } else {
+        config::word_budget(minutes).1
+    };
+    let scene_count = config::scene_budget(minutes).1;
+    let candidates_per_scene = cfg.validate_scene.max(1);
+    let image_count = if cli.no_images {
+        0
+    } else {
+        scene_count * candidates_per_scene + 1 + usize::from(!cli.no_consistency)
+    };
+    let video_count = match cli.video_scenes {
+        Some(count) => count.min(scene_count),
+        None if cli.video => scene_count,
+        None => 0,
+    };
+    let scene_seconds = if cfg.no_narration {
+        cfg.scene_seconds
+    } else {
+        minutes * 60.0 / scene_count as f64
+    };
+    let durations = vec![scene_seconds; scene_count];
+    let video_indices: Vec<usize> = (0..video_count).collect();
+    let video_seconds = video::billed_seconds_for(&cfg.video_model, &durations, &video_indices);
+
+    config::estimate_run_cost(
+        &cfg.text_model,
+        word_count,
+        &cfg.image_model,
+        image_count,
+        &cfg.video_model,
+        &cfg.video_resolution,
+        video_seconds,
+        cli.music_gen,
+    )
+}
+
+fn print_cost_estimate(estimate: &config::CostEstimate, itemized: bool) {
+    if !itemized {
+        println!(
+            "  estimated cost: ≤ ${:.2} (use --dry-run for a breakdown)",
+            estimate.total()
+        );
+        return;
+    }
+
+    println!("Estimated cost (up to; USD planning estimates):");
+    println!("  script:    ${:.2}", estimate.script);
+    println!("  narration: ${:.2}", estimate.narration);
+    println!("  images:    ${:.2}", estimate.images);
+    println!("  video:     ${:.2}", estimate.video);
+    println!("  music:     ${:.2}", estimate.music);
+    println!("  total:     ≤ ${:.2}", estimate.total());
+    println!("  note: estimates may differ from provider billing.");
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -228,6 +301,19 @@ async fn run(cli: &Cli) -> Result<()> {
         bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
     }
     let cfg = Config::load(cli)?;
+    let estimate = preflight_cost_estimate(cli, &cfg);
+    print_cost_estimate(&estimate, cli.dry_run);
+    if cli.dry_run {
+        return Ok(());
+    }
+    if let Some(max_cost) = cfg.max_cost {
+        if estimate.total() > max_cost {
+            bail!(
+                "projected cost ≤ ${:.2} exceeds --max-cost ${max_cost:.3}; aborting before paid API calls",
+                estimate.total()
+            );
+        }
+    }
     let mut or = OpenRouter::new(&cfg)?;
 
     // Resolve/validate the watermark up front (fail fast, before any generation) into an

@@ -219,6 +219,8 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--topic` / `--brief` / `--script` / `--url` | — | Input mode (exactly one). `--brief <file>` = AI writes from your notes; `--script <file>` = verbatim narration. |
 | `--from <dir>` | — | Resume a prior run folder: reuse its script/audio/captions/images and just re-render (e.g. add `--video`). |
 | `--out <dir>` | `out` | Output root directory. |
+| `--dry-run` | off | Print an itemized, upper-bound cost estimate and exit before any paid API call. |
+| `--max-cost <USD>` | — | Abort before paid API calls when the projected upper-bound estimate exceeds this USD amount. Also available as `REELMAESTRO_MAX_COST`. |
 | `--voice <name>` | auto | TTS voice (model-dependent). If unset, auto-picked from the script's narrator gender (male → `Puck`, female/neutral → `Kore`). |
 | `--speed <f64>` | `1.0` | Narration tempo (0.5–2.0), pitch-preserving. |
 | `--music-gen` | off | AI-generate a background soundtrack (OpenRouter music model, ~$0.08). |

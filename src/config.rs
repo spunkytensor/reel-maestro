@@ -189,6 +189,85 @@ pub fn music_cost() -> f64 {
     0.08
 }
 
+/// Estimated per-image cost by model (July 2026 OpenRouter pricing). Gemini 3 Pro Image is
+/// about $0.004 for a portrait-sized image; Gemini 3.1 Flash Image is roughly half that. These
+/// are planning estimates, not provider quotes, and unfamiliar models use the conservative
+/// $0.020 fallback.
+pub fn image_cost(model: &str) -> f64 {
+    if model.contains("gemini-3.1-flash-image") {
+        0.002
+    } else if model.contains("gemini-2.5-flash-image") {
+        0.0012
+    } else if model.contains("gemini-3-pro-image") {
+        0.004
+    } else if model.contains("gpt-5-image-mini") {
+        0.0048
+    } else if model.contains("gpt-5.4-image-2") {
+        0.016
+    } else {
+        0.020
+    }
+}
+
+/// Estimated TTS cost for narration. This uses $0.001 per 1,000 estimated characters (about six
+/// characters per word) as a small July 2026 planning estimate across the supported TTS models.
+pub fn tts_cost(word_count: usize) -> f64 {
+    word_count as f64 * 6.0 / 1_000.0 * 0.001
+}
+
+/// Estimated script-writing cost for one run (July 2026 planning estimate). The common Haiku,
+/// Sonnet, and Opus models receive tier-appropriate flat estimates; unfamiliar models use $0.05.
+pub fn script_cost(model: &str) -> f64 {
+    if model.contains("haiku") {
+        0.006
+    } else if model.contains("sonnet") {
+        0.03
+    } else if model.contains("opus") {
+        0.15
+    } else {
+        0.05
+    }
+}
+
+/// Itemized estimated cost of a run. All values are USD planning estimates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CostEstimate {
+    pub script: f64,
+    pub narration: f64,
+    pub images: f64,
+    pub video: f64,
+    pub music: f64,
+}
+
+impl CostEstimate {
+    pub fn total(self) -> f64 {
+        self.script + self.narration + self.images + self.video + self.music
+    }
+}
+
+/// Combine the paid stages into a pure, itemized run-cost estimate. `image_count` should include
+/// scene candidates plus the poster and, when consistency is on, the character reference;
+/// `video_seconds` must already use the selected model's billing-duration semantics.
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_run_cost(
+    text_model: &str,
+    word_count: usize,
+    image_model: &str,
+    image_count: usize,
+    video_model: &str,
+    video_resolution: &str,
+    video_seconds: u32,
+    generate_music: bool,
+) -> CostEstimate {
+    CostEstimate {
+        script: script_cost(text_model),
+        narration: tts_cost(word_count),
+        images: image_cost(image_model) * image_count as f64,
+        video: video_cost_per_second(video_model, video_resolution) * video_seconds as f64,
+        music: generate_music.then(music_cost).unwrap_or_default(),
+    }
+}
+
 /// Normalize a video resolution accepted by the video API.
 fn normalize_video_resolution(resolution: String) -> Result<String> {
     match resolution.trim().to_ascii_lowercase().as_str() {
@@ -238,6 +317,8 @@ pub struct Config {
     pub no_narration: bool,
     /// Per-scene seconds when narration is disabled (no audio to derive timing from).
     pub scene_seconds: f64,
+    /// Optional USD ceiling for the projected run cost.
+    pub max_cost: Option<f64>,
 }
 
 impl Config {
@@ -281,6 +362,17 @@ impl Config {
                 .or_else(|| std::env::var(env).ok())
                 .unwrap_or_else(|| default.to_string())
         };
+        let max_cost = cli.max_cost.or_else(|| {
+            std::env::var("REELMAESTRO_MAX_COST")
+                .ok()?
+                .parse::<f64>()
+                .ok()
+        });
+        if let Some(max_cost) = max_cost {
+            if !max_cost.is_finite() || max_cost < 0.0 {
+                bail!("--max-cost must be a non-negative finite USD amount (got {max_cost})");
+            }
+        }
 
         Ok(Config {
             api_key,
@@ -347,6 +439,7 @@ impl Config {
                         .ok()
                 })
                 .unwrap_or(4.0),
+            max_cost,
         })
     }
 }
@@ -393,9 +486,9 @@ fn env_flag(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas, chapter_count, music_cost, normalize_video_resolution, poster_canvas, scene_budget,
-        tier_defaults, video_cost_is_guess, video_cost_per_second, word_budget, Canvas, Format,
-        Quality,
+        canvas, chapter_count, estimate_run_cost, image_cost, music_cost,
+        normalize_video_resolution, poster_canvas, scene_budget, script_cost, tier_defaults,
+        tts_cost, video_cost_is_guess, video_cost_per_second, word_budget, Canvas, Format, Quality,
     };
 
     #[test]
@@ -501,5 +594,30 @@ mod tests {
         assert!(err
             .to_string()
             .contains("accepted values are 720p and 1080p"));
+    }
+
+    #[test]
+    fn cost_estimates_are_itemized_and_model_aware() {
+        assert_eq!(image_cost("google/gemini-3-pro-image"), 0.004);
+        assert_eq!(image_cost("google/gemini-3.1-flash-image"), 0.002);
+        assert_eq!(tts_cost(500), 0.003);
+        assert_eq!(script_cost("anthropic/claude-haiku-4-5"), 0.006);
+
+        let estimate = estimate_run_cost(
+            "anthropic/claude-sonnet-4-6",
+            500,
+            "google/gemini-3-pro-image",
+            10,
+            "google/veo-3.1-lite",
+            "720p",
+            8,
+            true,
+        );
+        assert_eq!(estimate.script, 0.03);
+        assert_eq!(estimate.narration, 0.003);
+        assert_eq!(estimate.images, 0.04);
+        assert_eq!(estimate.video, 0.4);
+        assert_eq!(estimate.music, 0.08);
+        assert!((estimate.total() - 0.553).abs() < f64::EPSILON);
     }
 }
