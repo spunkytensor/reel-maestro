@@ -101,6 +101,21 @@ pub fn build_ass(words: &[WordTiming], style: &CaptionStyle) -> String {
     s
 }
 
+/// Build an upload-ready SRT sidecar using the same short caption cards as the burned-in ASS.
+pub fn build_srt(words: &[WordTiming]) -> String {
+    let mut s = String::new();
+    for (index, card) in pack_cards(words).iter().enumerate() {
+        s.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            index + 1,
+            srt_time(card.start_s),
+            srt_time(card.end_s),
+            card.text
+        ));
+    }
+    s
+}
+
 /// The words whose spoken window starts inside `[start_s, end_s)`, shifted to segment-local
 /// time (clamped at 0). Used by chapter-chunked rendering: each segment burns its own ASS file,
 /// so the full-reel timings must be re-based to that segment's clock. A word straddling a
@@ -265,6 +280,17 @@ fn ass_time(t: f64) -> String {
     format!("{h}:{m:02}:{s:02}.{cs:02}")
 }
 
+/// Format seconds as SRT time `HH:MM:SS,mmm` (milliseconds).
+fn srt_time(t: f64) -> String {
+    let total_ms = (t.max(0.0) * 1000.0).round() as u64;
+    let ms = total_ms % 1000;
+    let total_s = total_ms / 1000;
+    let s = total_s % 60;
+    let m = (total_s / 60) % 60;
+    let h = total_s / 3600;
+    format!("{h:02}:{m:02}:{s:02},{ms:03}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +405,23 @@ mod tests {
             CaptionStyle::for_format_and_preset(Format::Reel, CaptionPreset::Burst, Some("Impact"));
         let ass = build_ass(&[], &style);
         assert!(ass.contains("Style: Burst,Impact,96,"));
+    }
+
+    #[test]
+    fn srt_time_formats_milliseconds() {
+        assert_eq!(srt_time(0.0), "00:00:00,000");
+        assert_eq!(srt_time(75.5), "00:01:15,500");
+        assert_eq!(srt_time(3661.234), "01:01:01,234");
+    }
+
+    #[test]
+    fn build_srt_uses_indices_and_blank_lines() {
+        let srt = build_srt(&[w("hello", 0.0, 0.5), w("world", 0.5, 1.0)]);
+        assert_eq!(srt, "1\n00:00:00,000 --> 00:00:01,000\nHELLO WORLD\n\n");
+    }
+
+    #[test]
+    fn build_srt_is_empty_without_words() {
+        assert!(build_srt(&[]).is_empty());
     }
 }

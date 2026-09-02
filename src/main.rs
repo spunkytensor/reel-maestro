@@ -202,6 +202,10 @@ pub struct Cli {
     /// Installed font family to use for captions (default: DejaVu Sans).
     #[arg(long)]
     caption_font: Option<String>,
+
+    /// Disable final audio normalization to the social-platform −14 LUFS target.
+    #[arg(long)]
+    no_loudnorm: bool,
 }
 
 /// Parse `--validate-scene`: `off` → 0 (validation disabled, one candidate); `2`/`3` → that many
@@ -676,6 +680,7 @@ async fn run(cli: &Cli) -> Result<()> {
         music: music.as_deref(),
         duck,
         music_volume: cli.music_volume,
+        loudnorm: !cli.no_loudnorm,
         captions_on: !cfg.no_captions,
         dissolve: !cli.no_dissolve,
         dissolve_seconds: cli.dissolve_seconds,
@@ -696,6 +701,11 @@ async fn run(cli: &Cli) -> Result<()> {
         match metadata::write_youtube_md(&dir, &script, &durations) {
             Ok(p) => println!("  metadata: {}", p.display()),
             Err(e) => eprintln!("  note: writing youtube.md failed ({e})"),
+        }
+    } else {
+        match metadata::write_reel_md(&dir, &script, durations.iter().sum()) {
+            Ok(p) => println!("  metadata: {}", p.display()),
+            Err(e) => eprintln!("  note: writing metadata.md failed ({e})"),
         }
     }
 

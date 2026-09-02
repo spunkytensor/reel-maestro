@@ -197,8 +197,8 @@ verbatim as the narration. (You can also do the brief inline with `--topic "$(ca
 
 Output lands in a timestamped folder `out/<YYYYMMDD_HHMMSS>_<title-slug>/` (e.g.
 `out/20260618_092729_the-sheepdog-and-the-duck/`):
-`reel.mp4`, `poster.jpg`, `reel.ass`, `audio.mp3`, `scene-NN.jpg`, `scene-NN.mp4` (video clips),
-`script.json`, `words.json`. A `--format youtube` run is 1920×1080 and adds `youtube.md` (pastable
+`reel.mp4`, `poster.jpg`, `reel.ass`, `captions.srt`, `metadata.md`, `audio.mp3`, `scene-NN.jpg`,
+`scene-NN.mp4` (video clips), `script.json`, `words.json`. A `--format youtube` run is 1920×1080 and adds `youtube.md` (pastable
 metadata) plus per-chapter `segment-NN.mp4` intermediates (and `chapter-NN.mp3` if the single TTS
 call had to fall back to per-chapter synthesis) — see [Long-form YouTube mode](#long-form-youtube-mode).
 
@@ -212,6 +212,9 @@ conditioned on the character reference so it matches the reel's cast. It's also 
 `reel.mp4` as cover art so players and file browsers show it as the video's thumbnail. On a
 `--from` resume an existing `poster.jpg` is reused (re-stitch stays free); if generation ever
 fails it falls back to a frame of the reel (`--poster-scene N` picks which scene).
+
+Final audio is normalized in a single pass toward −14 LUFS for social-platform delivery; use
+`--no-loudnorm` to retain the original mix level.
 
 ### Flags
 
@@ -242,6 +245,7 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--no-captions` | off | Don't burn captions into the video. |
 | `--caption-style <burst\|karaoke\|boxed\|minimal>` | `burst` | Caption look. `karaoke` highlights words as they are spoken; `boxed` adds an opaque dark backing; `minimal` is a smaller lower-third style. |
 | `--caption-font <NAME>` | `DejaVu Sans` | Installed font family for captions. |
+| `--no-loudnorm` | off | Keep the final audio mix unnormalized instead of targeting −14 LUFS. |
 | `--no-dissolve` | off | Force hard cuts between every scene (disable cross-dissolves). |
 | `--dissolve-seconds <f64>` | `0.5` | Cross-dissolve length for scriptwriter-flagged still→still transitions. |
 | `--no-grade` | off | Disable the unified cinematic colour grade / film grain + cross-scene exposure match. |
@@ -284,8 +288,8 @@ reelmaestro --topic "the history of espresso" --format youtube --minutes 5
   are stream-copy concatenated and the narration/music mix is muxed once. Dozens of scenes never
   sit in one giant ffmpeg filtergraph.
 - **Outputs** — a 1920x1080 `reel.mp4` (or `reel-video.mp4`), a 1280x720 `poster.jpg` thumbnail,
-  and `youtube.md` with the title, description, tags, and `0:00`-style chapter timestamps ready
-  to paste into a YouTube upload.
+  `captions.srt` sidecar for upload, and `youtube.md` with the title, description, tags, and
+  `0:00`-style chapter timestamps ready to paste into a YouTube upload.
 - **Video model** — the default becomes `alibaba/wan-2.6` (~$0.04/s, clips up to 15s, so long
   scene windows aren't slow-motion-stretched like 8s-capped Veo clips). Wan is newer to this
   pipeline than Veo; switch back per run with `--video-model google/veo-3.1-lite`. Cost scales

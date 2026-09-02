@@ -217,6 +217,8 @@ pub struct RenderReelOptions<'a> {
     pub duck: bool,
     /// Music gain (0.0–1.0+); clamped to >= 0 at the filter.
     pub music_volume: f64,
+    /// Normalize final audio for social-platform loudness targets.
+    pub loudnorm: bool,
     /// Optional `.ass` subtitle filename to burn captions in; `None` leaves the video clean.
     pub captions: Option<&'a str>,
     /// Extra font directory for libass to search. `None` lets libass fall back to
@@ -335,6 +337,11 @@ fn audio_mix_filter(narr: &str, mus: &str, duck: bool, music_volume: f64, total:
              [narrst][m]amix=inputs=2:duration=first:normalize=0[aout]"
         )
     }
+}
+
+/// Single-pass EBU R128 loudness normalization tuned for social-platform delivery.
+fn loudnorm_filter() -> &'static str {
+    "loudnorm=I=-14:TP=-1.5:LRA=11"
 }
 
 /// The video half of a render, shared by the single-pass reel and per-chapter segments:
@@ -594,6 +601,7 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         music,
         duck,
         music_volume,
+        loudnorm,
         captions,
         fontsdir,
         canvas,
@@ -638,7 +646,15 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
             music_volume,
             total,
         ));
-        "[aout]".to_string()
+        if loudnorm {
+            parts.push(format!("[aout]{}[anorm]", loudnorm_filter()));
+            "[anorm]".to_string()
+        } else {
+            "[aout]".to_string()
+        }
+    } else if loudnorm {
+        parts.push(format!("[{base}:a]{}[anorm]", loudnorm_filter()));
+        "[anorm]".to_string()
     } else {
         format!("{base}:a")
     };
@@ -737,12 +753,14 @@ pub fn render_segment(opts: RenderSegmentOptions<'_>) -> Result<()> {
 
 /// Mix the full-length narration + optional looped music into one audio file (aac in an m4a),
 /// in its own pass — the chunked render muxes this over the concatenated video segments.
+#[allow(clippy::too_many_arguments)]
 pub fn mix_audio(
     dir: &Path,
     audio: &str,
     music: Option<&str>,
     duck: bool,
     music_volume: f64,
+    loudnorm: bool,
     total: f64,
     output: &str,
 ) -> Result<()> {
@@ -753,14 +771,27 @@ pub fn mix_audio(
         args.extend(["-stream_loop", "-1", "-i"].iter().map(|s| s.to_string()));
         args.push(m.to_string());
         args.push("-filter_complex".into());
-        args.push(audio_mix_filter(
-            "[0:a]",
-            "[1:a]",
-            duck,
-            music_volume,
-            total,
-        ));
-        args.extend(["-map", "[aout]"].iter().map(|s| s.to_string()));
+        let mut filter = audio_mix_filter("[0:a]", "[1:a]", duck, music_volume, total);
+        if loudnorm {
+            filter.push(';');
+            filter.push_str(&format!("[aout]{}[anorm]", loudnorm_filter()));
+            args.push(filter);
+            args.extend(["-map", "[anorm]"].iter().map(|s| s.to_string()));
+        } else {
+            args.push(filter);
+            args.extend(["-map", "[aout]"].iter().map(|s| s.to_string()));
+        }
+    } else if loudnorm {
+        args.extend(
+            [
+                "-filter_complex",
+                "[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[anorm]",
+                "-map",
+                "[anorm]",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
     } else {
         args.extend(["-map", "0:a"].iter().map(|s| s.to_string()));
     }
@@ -868,7 +899,10 @@ fn run_ffmpeg_in(dir: &Path, args: &[String], what: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_up_temp_on_error, clip_chain, still_chain, watermark_parts};
+    use super::{
+        audio_mix_filter, clean_up_temp_on_error, clip_chain, loudnorm_filter, still_chain,
+        watermark_parts,
+    };
     use crate::config::Canvas;
     use anyhow::Context;
 
@@ -924,6 +958,16 @@ mod tests {
         let c = clip_chain(YT, 0, 1.0, 4.0, "", "");
         assert!(c.contains("scale=1920:1080:force_original_aspect_ratio=increase"));
         assert!(c.contains("crop=1920:1080"));
+    }
+
+    #[test]
+    fn mixed_audio_loudnorm_composition_targets_social_loudness() {
+        let filter = format!(
+            "{};[aout]{}[anorm]",
+            audio_mix_filter("[0:a]", "[1:a]", true, 0.6, 10.0),
+            loudnorm_filter()
+        );
+        assert!(filter.contains("loudnorm=I=-14"));
     }
 
     #[test]

@@ -52,6 +52,8 @@ pub struct BuildOptions<'a> {
     pub duck: bool,
     /// Music gain multiplier (≥ 0). Higher is louder.
     pub music_volume: f64,
+    /// Normalize final audio for social-platform loudness targets.
+    pub loudnorm: bool,
     /// Master switch for burning captions. When `false` no subtitle file is produced.
     pub captions_on: bool,
     /// Enable cross-dissolve transitions between consecutive Ken Burns stills the scriptwriter
@@ -84,6 +86,13 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     // Slice the audio timeline into one duration per scene, snapped to real word timings so cuts
     // land on the voiceover beats (see `scene_durations`).
     let durations = scene_durations(opts.scenes, opts.words, opts.audio)?;
+    if !opts.words.is_empty() {
+        std::fs::write(
+            opts.dir.join("captions.srt"),
+            captions::build_srt(opts.words),
+        )?;
+        println!("  captions: captions.srt");
+    }
 
     // Decide each scene's visual source: an AI video clip if one was produced for that
     // index, otherwise its still (which the renderer animates with Ken Burns). Renders
@@ -166,6 +175,7 @@ fn build_single_pass(
         music: music_name.as_deref(),
         duck: opts.duck,
         music_volume: opts.music_volume,
+        loudnorm: opts.loudnorm,
         captions,
         fontsdir,
         canvas: opts.canvas,
@@ -271,6 +281,7 @@ fn build_chunked(
         music_arg(opts.music).as_deref(),
         opts.duck,
         opts.music_volume,
+        opts.loudnorm,
         total,
         mix_name,
     )?;
@@ -661,6 +672,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: true,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -821,6 +833,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: true,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -922,6 +935,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: false,
             dissolve: true,
             dissolve_seconds: 0.5,
@@ -1020,6 +1034,7 @@ mod tests {
                 music: Some(&music),
                 duck,
                 music_volume: 0.6,
+                loudnorm: true,
                 captions_on: true,
                 dissolve: false,
                 dissolve_seconds: 0.5,
@@ -1152,6 +1167,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: true,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -1222,6 +1238,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.8,
+            loudnorm: true,
             captions_on: false,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -1293,6 +1310,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.8,
+            loudnorm: true,
             captions_on: false,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -1361,6 +1379,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.8,
+            loudnorm: true,
             captions_on: false,
             dissolve: false,
             dissolve_seconds: 0.5,

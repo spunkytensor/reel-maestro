@@ -52,9 +52,80 @@ pub fn write_youtube_md(dir: &Path, script: &Script, durations: &[f64]) -> Resul
     Ok(path)
 }
 
+/// The `metadata.md` document body for a short-form reel upload.
+fn reel_markdown(script: &Script, duration_s: f64) -> String {
+    let caption = suggested_caption(&script.narration);
+    let hook = script
+        .scenes
+        .first()
+        .map(|scene| scene.line.trim())
+        .filter(|line| !line.is_empty())
+        .unwrap_or("");
+    let hashtags = reel_hashtags(&script.title);
+    format!(
+        "# {}\n\n## Suggested caption\n\n{}\n\n## Hook\n\n{}\n\n## Duration\n\n{duration_s:.1}s\n\n## Hashtags\n\n{}\n",
+        script.title,
+        caption,
+        hook,
+        hashtags.join(" ")
+    )
+}
+
+/// Write `metadata.md` into a reel run folder. Like YouTube metadata, callers treat failures as
+/// non-fatal because rendering has already completed.
+pub fn write_reel_md(dir: &Path, script: &Script, duration_s: f64) -> Result<PathBuf> {
+    let path = dir.join("metadata.md");
+    std::fs::write(&path, reel_markdown(script, duration_s))?;
+    Ok(path)
+}
+
+fn suggested_caption(narration: &str) -> String {
+    let trimmed = narration.trim();
+    let mut end = 0;
+    let mut sentences = 0;
+    for (index, ch) in trimmed.char_indices() {
+        if matches!(ch, '.' | '!' | '?') {
+            sentences += 1;
+            end = index + ch.len_utf8();
+            if sentences == 2 {
+                break;
+            }
+        }
+    }
+    let candidate = if end > 0 { &trimmed[..end] } else { trimmed };
+    if candidate.chars().count() <= 150 {
+        candidate.to_string()
+    } else {
+        format!("{}…", candidate.chars().take(149).collect::<String>())
+    }
+}
+
+fn reel_hashtags(title: &str) -> Vec<String> {
+    const STOP_WORDS: &[&str] = &["the", "a", "an", "of", "and", "to", "in"];
+    let mut tags = Vec::new();
+    for word in title.split(|c: char| !c.is_alphanumeric()) {
+        let word = word.to_lowercase();
+        if !word.is_empty() && !STOP_WORDS.contains(&word.as_str()) && !tags.contains(&word) {
+            tags.push(word);
+        }
+        if tags.len() == 5 {
+            break;
+        }
+    }
+    if tags.len() < 2 {
+        tags.push("video".to_string());
+    }
+    for generic in ["shorts", "reels", "fyp"] {
+        if !tags.iter().any(|tag| tag == generic) {
+            tags.push(generic.to_string());
+        }
+    }
+    tags.into_iter().map(|tag| format!("#{tag}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{youtube_markdown, yt_timestamp};
+    use super::{reel_markdown, youtube_markdown, yt_timestamp};
     use crate::model::{Chapter, Script};
 
     #[test]
@@ -86,5 +157,28 @@ mod tests {
         assert!(md.contains("0:00 Intro\n"));
         assert!(md.contains("1:05 Payoff\n"));
         assert!(md.contains("Tags: dogs, winter"));
+    }
+
+    #[test]
+    fn reel_markdown_includes_local_caption_hook_duration_and_hashtags() {
+        let script: Script = serde_json::from_str(
+            r#"{"title":"The Art of Coffee and Coffee","narration":"First sentence. Second sentence! Third sentence.","scenes":[{"line":"Start with the grind.","image_prompt":""}],"music_prompt":"m"}"#,
+        )
+        .unwrap();
+        let md = reel_markdown(&script, 12.34);
+        assert!(md.contains("## Suggested caption\n\nFirst sentence. Second sentence!"));
+        assert!(md.contains("## Hook\n\nStart with the grind."));
+        assert!(md.contains("## Duration\n\n12.3s"));
+        assert!(md.contains("#art #coffee #shorts #reels #fyp"));
+    }
+
+    #[test]
+    fn reel_markdown_truncates_long_caption_with_ellipsis() {
+        let mut script: Script =
+            serde_json::from_str(r#"{"title":"T","narration":"","scenes":[],"music_prompt":"m"}"#)
+                .unwrap();
+        script.narration = "a".repeat(151);
+        let md = reel_markdown(&script, 1.0);
+        assert!(md.contains(&format!("{}…", "a".repeat(149))));
     }
 }
