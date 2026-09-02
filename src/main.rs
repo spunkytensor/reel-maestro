@@ -195,6 +195,13 @@ pub struct Cli {
     /// Abort before paid API calls when the projected estimate exceeds this USD amount.
     #[arg(long, value_name = "USD")]
     max_cost: Option<f64>,
+
+    /// Caption appearance: burst, karaoke, boxed, or minimal (default: burst).
+    #[arg(long, value_enum)]
+    caption_style: Option<captions::CaptionPreset>,
+    /// Installed font family to use for captions (default: DejaVu Sans).
+    #[arg(long)]
+    caption_font: Option<String>,
 }
 
 /// Parse `--validate-scene`: `off` → 0 (validation disabled, one candidate); `2`/`3` → that many
@@ -674,7 +681,11 @@ async fn run(cli: &Cli) -> Result<()> {
         dissolve_seconds: cli.dissolve_seconds,
         grade: !cli.no_grade,
         canvas,
-        caption_style: captions::CaptionStyle::for_format(format),
+        caption_style: captions::CaptionStyle::for_format_and_preset(
+            format,
+            cfg.caption_style,
+            cfg.caption_font.as_deref(),
+        ),
         chapters: &script.chapters,
         watermark: watermark.as_deref(),
     })?;

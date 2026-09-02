@@ -6,7 +6,7 @@
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 
-use crate::Cli;
+use crate::{captions::CaptionPreset, Cli};
 
 /// Output format: a vertical short-form reel or a landscape long-form YouTube video. Drives the
 /// canvas geometry, script structure (single-shot vs chaptered), caption styling, poster aspect,
@@ -311,6 +311,10 @@ pub struct Config {
     pub whisper_cmd: String,
     /// Whisper model size/name passed to that command (e.g. `base`, `small`, `large-v3`).
     pub whisper_model: String,
+    /// Caption preset selected by CLI or `REELMAESTRO_CAPTION_STYLE`.
+    pub caption_style: CaptionPreset,
+    /// Optional installed font family selected by CLI or `REELMAESTRO_CAPTION_FONT`.
+    pub caption_font: Option<String>,
     /// Don't burn captions into the video.
     pub no_captions: bool,
     /// Don't synthesize spoken narration (silent or music-only video).
@@ -428,6 +432,14 @@ impl Config {
                 "whisper_timestamped",
             ),
             whisper_model: pick(&cli.whisper_model, "REELMAESTRO_WHISPER_MODEL", "base"),
+            caption_style: cli
+                .caption_style
+                .or_else(caption_style_from_env)
+                .unwrap_or(CaptionPreset::Burst),
+            caption_font: cli
+                .caption_font
+                .clone()
+                .or_else(|| std::env::var("REELMAESTRO_CAPTION_FONT").ok()),
             no_captions: cli.no_captions || env_flag("REELMAESTRO_NO_CAPTIONS"),
             no_narration: cli.no_narration || env_flag("REELMAESTRO_NO_NARRATION"),
             scene_seconds: cli
@@ -466,6 +478,18 @@ fn quality_from_env() -> Option<Quality> {
         "premium" => Some(Quality::Premium),
         other => {
             eprintln!("  note: unknown REELMAESTRO_QUALITY {other:?}; using standard");
+            None
+        }
+    }
+}
+
+/// Read the caption preset from `REELMAESTRO_CAPTION_STYLE`, if set and valid.
+fn caption_style_from_env() -> Option<CaptionPreset> {
+    let value = std::env::var("REELMAESTRO_CAPTION_STYLE").ok()?;
+    match CaptionPreset::from_str(value.trim(), true) {
+        Ok(preset) => Some(preset),
+        Err(_) => {
+            eprintln!("  note: unknown REELMAESTRO_CAPTION_STYLE {value:?}; using burst");
             None
         }
     }

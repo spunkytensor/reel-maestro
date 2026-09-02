@@ -240,6 +240,8 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--poster-scene <N>` | `0` | Fallback only: which scene's frame to use if custom poster generation fails (0 = hook). |
 | `--no-embed-poster` | off | Write `poster.jpg` but don't embed it as the MP4's cover art. |
 | `--no-captions` | off | Don't burn captions into the video. |
+| `--caption-style <burst\|karaoke\|boxed\|minimal>` | `burst` | Caption look. `karaoke` highlights words as they are spoken; `boxed` adds an opaque dark backing; `minimal` is a smaller lower-third style. |
+| `--caption-font <NAME>` | `DejaVu Sans` | Installed font family for captions. |
 | `--no-dissolve` | off | Force hard cuts between every scene (disable cross-dissolves). |
 | `--dissolve-seconds <f64>` | `0.5` | Cross-dissolve length for scriptwriter-flagged still→still transitions. |
 | `--no-grade` | off | Disable the unified cinematic colour grade / film grain + cross-scene exposure match. |
@@ -250,6 +252,13 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--whisper-cmd <cmd>` | `whisper_timestamped` | Local command that emits word-level timestamps. |
 | `--whisper-model <name>` | `base` | Whisper model for local timing (`base`, `small`, `large-v3`, …). |
 | `--text-model` / `--image-model` / `--tts-model` / `--music-model` / `--judge-model` | see `.env.example` | Per-stage OpenRouter model overrides (the judge is the multimodal model scoring scene consistency). |
+
+### Caption styles
+
+`--caption-style burst` preserves the original large word-burst treatment. Choose `karaoke` to
+sweep a yellow highlight across each timed word, `boxed` for white text on an opaque dark box, or
+`minimal` for smaller, thinner-outlined captions placed lower on the frame. Use
+`--caption-font "Font Family"` when that font is installed where ffmpeg runs.
 
 ## Long-form YouTube mode
 
