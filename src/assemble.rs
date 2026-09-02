@@ -1430,8 +1430,8 @@ mod tests {
         let scenes = vec![scene("one"), scene("two three"), scene("four")];
         let words = vec![
             word("one", 0.0, 0.2),
-            word("two", 0.3, 0.4),
-            word("three", 0.5, 0.6),
+            word("two", 0.6, 0.7),
+            word("three", 0.8, 0.9),
             word("four", 1.7, 2.0),
         ];
         let windows = scene_windows(&scenes, &words, 2.0);
@@ -1457,7 +1457,9 @@ mod tests {
         assert!(windows.windows(2).all(|pair| pair[0].1 <= pair[1].0));
         assert_eq!(windows.last().unwrap().1, 2.0);
 
-        // Empty lines currently claim one word share and can push the later scene forward.
+        // An empty line claims no word share: the empty scene starts where its successor's first
+        // word is spoken and gets only the 0.5s minimum beat, so the later scene is delayed by
+        // that beat alone (1.5) rather than by a phantom proportional share (2.0).
         let scenes = vec![scene("one"), scene(""), scene("two three four")];
         let words = vec![
             word("one", 0.0, 0.1),
@@ -1466,8 +1468,8 @@ mod tests {
             word("four", 3.0, 3.1),
         ];
         let windows = scene_windows(&scenes, &words, 4.0);
-        // TODO(review #4): Empty lines should receive zero word share, making this 1.0.
-        assert_eq!(windows[2].0, 2.0);
+        assert_eq!(windows[1], (1.0, 1.5));
+        assert_eq!(windows[2].0, 1.5);
 
         // No timings use word-count proportions rather than timestamp boundaries.
         let scenes = vec![scene("one"), scene("two three")];
@@ -1483,14 +1485,12 @@ mod tests {
             vec![(0.0, 1.0), (1.0, 3.0)]
         );
 
-        // The per-scene 0.5s floor can currently make the rendered scene durations exceed audio.
+        // The 0.5s minimum beat is enforced inside the tiling, so a tiny scene is widened at the
+        // expense of its neighbour and the durations still sum to the audio length.
         let scenes = vec![scene("one"), scene(&"two ".repeat(100))];
         let windows = scene_windows(&scenes, &[], 1.0);
-        let floored_total: f64 = windows
-            .iter()
-            .map(|(start, end)| (end - start).max(0.5))
-            .sum();
-        // TODO(review #4): Scene durations should sum to the audio total after floor handling.
-        assert!(floored_total > 1.0, "floored total was {floored_total}");
+        assert_eq!(windows, vec![(0.0, 0.5), (0.5, 1.0)]);
+        let total: f64 = windows.iter().map(|(start, end)| end - start).sum();
+        assert!((total - 1.0).abs() < 1e-9, "durations summed to {total}");
     }
 }
