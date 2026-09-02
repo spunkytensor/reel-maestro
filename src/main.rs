@@ -384,7 +384,14 @@ async fn run(cli: &Cli) -> Result<()> {
                         words_path.display(),
                         audio.display()
                     );
-                    transcribe::word_timings(&cfg, &audio, &script.narration, &words_path)?.words
+                    transcribe::word_timings(
+                        &cfg,
+                        &audio,
+                        &script.narration,
+                        &words_path,
+                        cli.speed,
+                    )?
+                    .words
                 } else {
                     Vec::new()
                 }

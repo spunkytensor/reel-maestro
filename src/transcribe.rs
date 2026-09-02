@@ -90,11 +90,19 @@ fn estimate_from_duration(narration: &str, duration_s: f64) -> Vec<WordTiming> {
     estimate(narration, duration_s)
 }
 
+/// Natural TTS voices run up to ~15% faster than the script-budget pace of
+/// [`crate::config::WORDS_PER_MINUTE`]. The duration-based estimate assumes that faster pace so a
+/// merely brisk (untruncated) take is not mistaken for a truncated one and re-synthesized at cost.
+/// A genuinely truncated take (≲75% of the words spoken) still lands well below
+/// `MIN_TTS_COVERAGE` in `main.rs`.
+const ESTIMATE_PACE_TOLERANCE: f64 = 1.15;
+
 /// Estimate how much narration is present from duration when word-level ASR is unavailable.
-/// The expected duration uses the narration pace used for script budgets and is adjusted for the
-/// pitch-preserving TTS tempo multiplier.
+/// The expected duration uses the script-budget pace (times [`ESTIMATE_PACE_TOLERANCE`]) and is
+/// adjusted for the pitch-preserving TTS tempo multiplier.
 fn estimated_coverage(audio_seconds: f64, word_count: usize, speed: f64) -> f64 {
-    let expected_seconds = word_count as f64 * 60.0 / crate::config::WORDS_PER_MINUTE / speed;
+    let pace = crate::config::WORDS_PER_MINUTE * ESTIMATE_PACE_TOLERANCE;
+    let expected_seconds = word_count as f64 * 60.0 / pace / speed;
     (audio_seconds / expected_seconds).min(1.0)
 }
 
@@ -365,10 +373,17 @@ mod tests {
 
     #[test]
     fn estimated_coverage_tracks_audio_duration() {
+        // 145 words at the (tolerance-adjusted) pace take 60 s / 1.15 ≈ 52.2 s.
         let words = 145;
-        let expected_seconds = 60.0;
+        let expected_seconds = 60.0 / super::ESTIMATE_PACE_TOLERANCE;
         assert!((estimated_coverage(expected_seconds, words, 1.0) - 1.0).abs() < 1e-9);
         assert!((estimated_coverage(expected_seconds / 2.0, words, 1.0) - 0.5).abs() < 1e-9);
+        // A brisk but complete take at the nominal 145 wpm (60 s) still reads as full coverage.
+        assert!((estimated_coverage(60.0, words, 1.0) - 1.0).abs() < 1e-9);
+        // --speed 2.0 halves the expected duration.
+        assert!((estimated_coverage(expected_seconds / 2.0, words, 2.0) - 1.0).abs() < 1e-9);
+        // A take with only ~70% of the words spoken is flagged (below the 0.85 floor in main.rs).
+        assert!(estimated_coverage(60.0 * 0.7, words, 1.0) < 0.85);
     }
 
     #[test]
