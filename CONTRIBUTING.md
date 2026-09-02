@@ -57,10 +57,11 @@ End-to-end runs call paid model APIs. Only run them intentionally, with your own
 
 ## Security artifacts
 
-CI runs Rust dependency policy checks and uploads two supply-chain artifacts on every run:
+The CVE Audit workflow checks the Rust dependency lockfile on pushes, pull requests, and a weekly
+schedule. It uploads its RustSec/CVE results as `cargo-audit.json`.
 
-- `cargo-audit.json` — RustSec/CVE audit output from `cargo audit --json`.
-- `reelmaestro-sbom.cdx.json` — CycloneDX 1.5 SBOM from `cargo cyclonedx`.
+CI separately runs the dependency policy check and uploads a CycloneDX 1.5 SBOM as
+`reelmaestro-sbom.cdx.json`.
 
 To reproduce locally:
 

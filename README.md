@@ -1,6 +1,7 @@
 # Reel Maestro
 
 [![CI](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml)
+[![CVE Audit](https://github.com/spunkytensor/reel-maestro/actions/workflows/security.yml/badge.svg)](https://github.com/spunkytensor/reel-maestro/actions/workflows/security.yml)
 
 <p align="center">
   <img src="logo.jpg" alt="Reel Maestro logo" width="240">

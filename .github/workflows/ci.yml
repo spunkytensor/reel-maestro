@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 8 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -90,9 +88,8 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Install Rust security tooling
+      - name: Install Rust supply-chain tooling
         run: |
-          cargo install cargo-audit --version 0.22.2 --locked
           cargo install cargo-cyclonedx --version 0.5.9 --locked
           cargo install cargo-deny --version 0.19.8 --locked
 
@@ -105,19 +102,9 @@ jobs:
           cargo cyclonedx --format json --spec-version 1.5 --override-filename reelmaestro-sbom
           mv reelmaestro-sbom.json target/security/reelmaestro-sbom.cdx.json
 
-      - name: Audit Rust dependencies for CVEs
-        run: |
-          mkdir -p target/security
-          set +e
-          cargo audit --json > target/security/cargo-audit.json
-          status=$?
-          echo "$status" > target/security/cargo-audit.exit-code
-          exit "$status"
-
-      - name: Upload Rust security artifacts
-        if: always()
+      - name: Upload Rust supply-chain artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: rust-security-artifacts
+          name: rust-supply-chain-artifacts
           path: target/security/
           if-no-files-found: warn
