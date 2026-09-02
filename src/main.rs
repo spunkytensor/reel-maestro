@@ -374,10 +374,26 @@ async fn run(cli: &Cli) -> Result<()> {
         if !audio.exists() {
             bail!("{} has no audio.mp3 to resume from", dir.display());
         }
-        std::fs::read(&words_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        match std::fs::read(&words_path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .with_context(|| format!("could not parse {}", words_path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !cfg.no_narration && !script.narration.trim().is_empty() {
+                    eprintln!(
+                        "  note: {} is missing; re-deriving word timings from {} ...",
+                        words_path.display(),
+                        audio.display()
+                    );
+                    transcribe::word_timings(&cfg, &audio, &script.narration, &words_path)?.words
+                } else {
+                    Vec::new()
+                }
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not read {}", words_path.display()));
+            }
+        }
     } else if cfg.no_narration {
         let total = cfg.scene_seconds * script.scenes.len() as f64;
         println!("→ no narration: building silent {total:.1}s timeline ...");

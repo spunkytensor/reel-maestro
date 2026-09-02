@@ -397,7 +397,9 @@ and any soundtrack, so the video matches the preview you approved. A still re-re
 writes `reel.mp4`; the **video upgrade writes `reel-video.mp4`**, leaving the still `reel.mp4` intact
 so you keep both versions. You can also use `--from` to just re-stitch (e.g. after tweaking a scene
 image by hand), or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no `--video`
-does a pure local re-assemble (no API calls).
+does a pure local re-assemble (no API calls). If a narrated run's `words.json` is missing, resume
+re-derives it locally from `audio.mp3`; an unreadable or invalid `words.json` stops with an error
+instead of rendering without captions.
 
 ## Video scenes (optional, costs real money)
 
