@@ -1,0 +1,50 @@
+name: CVE Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Audit Rust dependencies for CVEs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Rust dependencies for CVEs
+        run: |
+          mkdir -p target/security
+          set +e
+          cargo audit --json > target/security/cargo-audit.json
+          status=$?
+          echo "$status" > target/security/cargo-audit.exit-code
+          exit "$status"
+
+      - name: Upload Rust security artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargo-audit
+          path: target/security/
+          if-no-files-found: warn
