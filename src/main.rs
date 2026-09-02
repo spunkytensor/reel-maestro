@@ -81,9 +81,9 @@ pub struct Cli {
     #[arg(long, default_value_t = 0.6)]
     music_volume: f64,
 
-    /// Skip image generation and stop right after writing word timings (cheap caption-timing
-    /// test: runs only script + TTS + word timing, no image/video/music/assembly calls).
-    #[arg(long)]
+    /// Fresh-run caption-timing test: skip image generation and stop after writing word timings
+    /// (script + TTS + word timing only; cannot be combined with --from).
+    #[arg(long, conflicts_with = "from")]
     no_images: bool,
 
     /// Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video

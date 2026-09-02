@@ -243,7 +243,7 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--validate-scene <off\|2\|3>` | tier (`2`) | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` / `3` = at most that many candidates, for at most N× image cost. Defaults from the quality tier (off on `draft`, 3 on `premium`). |
 | `--no-narration` | off | No spoken voiceover — produce a silent or music-only video. |
 | `--scene-seconds <f64>` | `4.0` | Per-scene length used when `--no-narration` is set (no audio to time against). |
-| `--no-images` | off | Stop right after writing word timings (script + TTS + timing only). Cheap way to test caption timing. |
+| `--no-images` | off | Fresh-run caption-timing test: stop right after writing word timings (script + TTS + timing only). Cannot be combined with `--from`. |
 | `--whisper-cmd <cmd>` | `whisper_timestamped` | Local command that emits word-level timestamps. |
 | `--whisper-model <name>` | `base` | Whisper model for local timing (`base`, `small`, `large-v3`, …). |
 | `--text-model` / `--image-model` / `--tts-model` / `--music-model` / `--judge-model` | see `.env.example` | Per-stage OpenRouter model overrides (the judge is the multimodal model scoring scene consistency). |
@@ -532,8 +532,9 @@ path, any Layer 3 failure points at a specific stage: estimated (contiguous) `wo
 `whisper_timestamped` missing/failing, a placeholder `scene-*.jpg` ⇒ image-gen, a script
 error ⇒ the text model.
 
-> Tip: `--no-images` runs only script + TTS + word timing and stops, so you can check
-> caption timing for a couple of cents without paying for images.
+> Tip: on a fresh run, `--no-images` runs only script + TTS + word timing and stops, so you can
+> check caption timing for a couple of cents without paying for images. It cannot be combined with
+> `--from`.
 
 ## AI invocations at a glance
 
