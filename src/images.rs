@@ -101,10 +101,43 @@ pub async fn generate(
     validate: usize,
     canvas: Canvas,
     dir: &Path,
+    reuse_existing: bool,
 ) -> Result<Vec<PathBuf>> {
+    let n = scenes.len();
+    let missing = if reuse_existing {
+        missing_scenes(dir, n)
+    } else {
+        (0..n).collect()
+    };
+    if reuse_existing {
+        let reused = n - missing.len();
+        if missing.is_empty() {
+            println!("→ reusing {reused} preview image(s), regenerating 0 missing");
+            return Ok((0..n)
+                .map(|i| dir.join(format!("scene-{i:02}.jpg")))
+                .collect());
+        }
+        let missing_labels: Vec<String> =
+            missing.iter().map(|&i| format!("scene-{i:02}")).collect();
+        println!(
+            "→ reusing {reused} preview image(s), regenerating {} missing ({})",
+            missing.len(),
+            missing_labels.join(", ")
+        );
+    }
+
     // Build the shared, per-entity reference images once.
     let (effective_chars, char_urls, loc_urls, forced_all) = if consistency {
-        build_references(or, characters, locations, character_ref, canvas, dir).await
+        build_references(
+            or,
+            characters,
+            locations,
+            character_ref,
+            canvas,
+            dir,
+            reuse_existing,
+        )
+        .await
     } else {
         (Vec::new(), HashMap::new(), HashMap::new(), false)
     };
@@ -133,15 +166,20 @@ pub async fn generate(
         lid.is_empty() || anchor_of.get(lid) == Some(&i)
     };
 
-    let n = scenes.len();
-    let mut out: Vec<Option<PathBuf>> = (0..n).map(|_| None).collect();
+    let mut out: Vec<Option<PathBuf>> = (0..n)
+        .map(|i| {
+            let path = dir.join(format!("scene-{i:02}.jpg"));
+            reuse_existing.then_some(path).filter(|path| path.exists())
+        })
+        .collect();
 
     // Phase 1: anchors + location-less scenes, fully concurrent.
-    let done1: Vec<(usize, PathBuf)> = stream::iter((0..n).filter(|&i| is_phase1(i)))
-        .map(|i| async move { (i, render_scene(ctx, i, &scenes[i], &[]).await) })
-        .buffer_unordered(MAX_CONCURRENT)
-        .collect()
-        .await;
+    let done1: Vec<(usize, PathBuf)> =
+        stream::iter(missing.iter().copied().filter(|&i| is_phase1(i)))
+            .map(|i| async move { (i, render_scene(ctx, i, &scenes[i], &[]).await) })
+            .buffer_unordered(MAX_CONCURRENT)
+            .collect()
+            .await;
     for (i, p) in done1 {
         out[i] = Some(p);
     }
@@ -158,7 +196,9 @@ pub async fn generate(
     let anchor_url = &anchor_url;
 
     // Phase 2: each location's remaining scenes, conditioned on that location's anchor image.
-    let done2: Vec<(usize, PathBuf)> = stream::iter((0..n).filter(|&i| !is_phase1(i)))
+    let done2: Vec<(usize, PathBuf)> = stream::iter(
+        missing.iter().copied().filter(|&i| !is_phase1(i)),
+    )
         .map(|i| async move {
             let location_id = scenes[i].location_id.trim();
             let chained: Vec<Reference> = match anchor_url.get(location_id) {
@@ -196,6 +236,13 @@ pub async fn generate(
                 anyhow::anyhow!("internal error: scene {i} was not rendered by either phase")
             })
         })
+        .collect()
+}
+
+/// Return the zero-based scene indices whose stills are absent from a prior run directory.
+fn missing_scenes(dir: &Path, n: usize) -> Vec<usize> {
+    (0..n)
+        .filter(|&i| !dir.join(format!("scene-{i:02}.jpg")).exists())
         .collect()
 }
 
@@ -584,6 +631,7 @@ async fn build_references(
     character_ref: Option<&Path>,
     canvas: Canvas,
     dir: &Path,
+    reuse_existing: bool,
 ) -> (
     Vec<Entity>,
     HashMap<String, Vec<String>>,
@@ -605,7 +653,7 @@ async fn build_references(
     for (i, c) in effective.iter().enumerate() {
         // The user photo overrides the FIRST character's reference; the rest are generated.
         let photo = if i == 0 { character_ref } else { None };
-        match build_character_ref(or, c, photo, canvas, dir).await {
+        match build_character_ref(or, c, photo, canvas, dir, reuse_existing).await {
             Some(urls) => {
                 // Mirror the primary character to the legacy `character-ref.jpg` the poster reads.
                 if i == 0 {
@@ -622,7 +670,7 @@ async fn build_references(
 
     let mut loc_urls: HashMap<String, String> = HashMap::new();
     for l in locations {
-        match build_location_ref(or, l, canvas, dir).await {
+        match build_location_ref(or, l, canvas, dir, reuse_existing).await {
             Some(url) => {
                 loc_urls.insert(l.id.clone(), url);
             }
@@ -656,51 +704,75 @@ async fn build_character_ref(
     photo: Option<&Path>,
     canvas: Canvas,
     dir: &Path,
+    reuse_existing: bool,
 ) -> Option<Vec<String>> {
+    let front_path = dir.join(format!("character-{}.jpg", slug(&entity.id)));
+    let side_path = dir.join(format!("character-{}-b.jpg", slug(&entity.id)));
+    let mut urls = if reuse_existing {
+        std::fs::read(&front_path)
+            .ok()
+            .map(|bytes| vec![openrouter::data_url_from_image(&bytes)])
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     if let Some(p) = photo {
-        return match std::fs::read(p) {
-            Ok(bytes) => Some(vec![openrouter::data_url_from_image(&bytes)]),
-            Err(e) => {
-                eprintln!(
-                    "  note: could not read --character-ref {}: {e}",
-                    p.display()
-                );
-                None
+        return if urls.is_empty() {
+            match std::fs::read(p) {
+                Ok(bytes) => Some(vec![openrouter::data_url_from_image(&bytes)]),
+                Err(e) => {
+                    eprintln!(
+                        "  note: could not read --character-ref {}: {e}",
+                        p.display()
+                    );
+                    None
+                }
             }
+        } else {
+            if let Ok(bytes) = std::fs::read(&side_path) {
+                urls.push(openrouter::data_url_from_image(&bytes));
+            }
+            Some(urls)
         };
     }
 
-    println!(
-        "  building character reference \"{}\": {}",
-        entity.id, entity.description
-    );
-    let prompt = format!(
-        "A clear, well-lit reference photograph of {}. Plain neutral background, \
-         sharp focus, subject centered and fully visible.",
-        entity.description
-    );
-    // Front portrait (the primary anchor, saved as character-<id>.jpg).
-    let front = generate_one(
-        or,
-        &prompt,
-        &[],
-        None,
-        &[],
-        false,
-        "",
-        canvas,
-        &format!("character \"{}\"", entity.id),
-    )
-    .await?;
-    let front_path = dir.join(format!("character-{}.jpg", slug(&entity.id)));
-    front.save(&front_path).ok()?;
-    let mut urls = match std::fs::read(&front_path) {
-        Ok(b) => vec![openrouter::data_url_from_image(&b)],
-        Err(_) => return None,
-    };
+    if urls.is_empty() {
+        println!(
+            "  building character reference \"{}\": {}",
+            entity.id, entity.description
+        );
+        let prompt = format!(
+            "A clear, well-lit reference photograph of {}. Plain neutral background, \
+             sharp focus, subject centered and fully visible.",
+            entity.description
+        );
+        let front = generate_one(
+            or,
+            &prompt,
+            &[],
+            None,
+            &[],
+            false,
+            "",
+            canvas,
+            &format!("character \"{}\"", entity.id),
+        )
+        .await?;
+        front.save(&front_path).ok()?;
+        urls = match std::fs::read(&front_path) {
+            Ok(bytes) => vec![openrouter::data_url_from_image(&bytes)],
+            Err(_) => return None,
+        };
+    }
 
     // A second 3/4 view gives the model a fuller sense of identity, which holds far better across
     // varied poses/angles than a single frontal portrait. Non-fatal: skip it if it fails.
+    if reuse_existing {
+        if let Ok(bytes) = std::fs::read(&side_path) {
+            urls.push(openrouter::data_url_from_image(&bytes));
+            return Some(urls);
+        }
+    }
     let prompt_b = format!(
         "A three-quarter angle reference photograph of the SAME person, same identity and outfit: \
          {}. Plain neutral background, sharp focus, head and torso visible.",
@@ -719,7 +791,6 @@ async fn build_character_ref(
     )
     .await
     {
-        let side_path = dir.join(format!("character-{}-b.jpg", slug(&entity.id)));
         if side.save(&side_path).is_ok() {
             if let Ok(b) = std::fs::read(&side_path) {
                 urls.push(openrouter::data_url_from_image(&b));
@@ -736,7 +807,14 @@ async fn build_location_ref(
     entity: &Entity,
     canvas: Canvas,
     dir: &Path,
+    reuse_existing: bool,
 ) -> Option<String> {
+    let path = dir.join(format!("location-{}.jpg", slug(&entity.id)));
+    if reuse_existing {
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Some(openrouter::data_url_from_image(&bytes));
+        }
+    }
     println!(
         "  building location reference \"{}\": {}",
         entity.id, entity.description
@@ -754,7 +832,6 @@ async fn build_location_ref(
         &format!("location \"{}\"", entity.id),
     )
     .await?;
-    let path = dir.join(format!("location-{}.jpg", slug(&entity.id)));
     img.save(&path).ok()?;
     std::fs::read(&path)
         .ok()
@@ -985,7 +1062,7 @@ fn placeholder(idx: usize, canvas: Canvas) -> RgbImage {
 mod tests {
     use super::{
         attempt_budget, build_image_prompt, build_location_ref_prompt, judge_instruction,
-        location_anchors, slug, Reference, MAX_VALIDATE_ATTEMPTS,
+        location_anchors, missing_scenes, slug, Reference, MAX_VALIDATE_ATTEMPTS,
     };
     use crate::config::Canvas;
     use crate::model::{Entity, Scene};
@@ -1174,5 +1251,22 @@ mod tests {
         assert_eq!(slug("the date"), "the-date");
         assert_eq!(slug("  weird/id!  "), "weird-id");
         assert_eq!(slug("///"), "x");
+    }
+
+    #[test]
+    fn missing_scenes_skips_existing_stills() {
+        let dir = std::env::temp_dir().join(format!(
+            "reelmaestro-images-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock precedes Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).expect("create temporary test directory");
+        std::fs::write(dir.join("scene-00.jpg"), []).expect("create existing scene 0");
+        std::fs::write(dir.join("scene-02.jpg"), []).expect("create existing scene 2");
+
+        assert_eq!(missing_scenes(&dir, 4), vec![1, 3]);
+        std::fs::remove_dir_all(dir).expect("remove temporary test directory");
     }
 }

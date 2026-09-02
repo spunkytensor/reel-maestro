@@ -396,11 +396,14 @@ reelmaestro --from out/20260618_141530_a-fox-and-a-hare-become-friends/ --video
 ```
 
 `--from <dir>` reuses the folder's `script.json`, `audio.mp3`, `words.json`, `scene-NN.jpg`,
-and any soundtrack, so the video matches the preview you approved. A still re-render (no `--video`)
+and any soundtrack, so the video matches the preview you approved. A missing still is regenerated
+on resume (only that scene is billed), so delete a bad `scene-NN.jpg` and re-run `--from …` to redo
+just that scene. A still re-render (no `--video`)
 writes `reel.mp4`; the **video upgrade writes `reel-video.mp4`**, leaving the still `reel.mp4` intact
 so you keep both versions. You can also use `--from` to just re-stitch (e.g. after tweaking a scene
-image by hand), or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no `--video`
-does a pure local re-assemble (no API calls). If a narrated run's `words.json` is missing, resume
+image by hand), or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no
+`--video` does a pure local re-assemble when every still exists (no API calls). If a narrated run's
+`words.json` is missing, resume
 re-derives it locally from `audio.mp3`; an unreadable or invalid `words.json` stops with an error
 instead of rendering without captions.
 

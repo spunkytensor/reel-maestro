@@ -525,18 +525,21 @@ async fn run(cli: &Cli) -> Result<()> {
     }
 
     // 4. Images ---------------------------------------------------------------
-    // Resume reuses the previewed stills so the video matches exactly what you approved.
+    // Resume reuses previewed stills and regenerates only any deleted/missing scene images.
     let images: Vec<PathBuf> = if resume {
-        let imgs: Vec<PathBuf> = (0..script.scenes.len())
-            .map(|i| dir.join(format!("scene-{i:02}.jpg")))
-            .collect();
-        for p in &imgs {
-            if !p.exists() {
-                bail!("missing {} — cannot resume", p.display());
-            }
-        }
-        println!("→ reusing {} preview images", imgs.len());
-        imgs
+        images::generate(
+            &or,
+            &script.scenes,
+            &script.characters,
+            &script.locations,
+            cli.character_ref.as_deref(),
+            !cli.no_consistency,
+            cfg.validate_scene,
+            canvas,
+            &dir,
+            true,
+        )
+        .await?
     } else {
         println!(
             "→ generating {} images ({}) ...",
@@ -587,6 +590,7 @@ async fn run(cli: &Cli) -> Result<()> {
             validate,
             canvas,
             &dir,
+            false,
         )
         .await?
     };
