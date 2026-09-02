@@ -67,7 +67,8 @@ stream-concatenated into one video (see [Long-form YouTube mode](#long-form-yout
 - An OpenRouter API key with a little credit.
 - *(Optional, for exact captions)* [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped)
   on your PATH for real word-level timing (installed via [`uv`](https://docs.astral.sh/uv/) —
-  see below). Without it, the tool falls back to estimating word timings from the audio length.
+  see below). Without it, the tool falls back to estimating word timings from the audio length,
+  including natural pauses at punctuation.
 
 ## Supported platforms
 
@@ -517,9 +518,10 @@ cargo run -- --url "https://en.wikipedia.org/wiki/Tardigrade"
 Then inspect `out/<slug>/`:
 
 - `words.json` — the word timings used for captions. Entries with gaps between one word's
-  `end_s` and the next word's `start_s` are real timestamps from `whisper_timestamped`;
-  perfectly contiguous spans mean it fell back to the duration estimate (tool not installed
-  or it errored — check the `note:` lines in the run output).
+  `end_s` and the next word's `start_s` are real timestamps from `whisper_timestamped` or
+  punctuation-aware pauses from the duration estimate. Perfectly contiguous spans mean the
+  estimator found no intervening punctuation (tool not installed or it errored — check the
+  `note:` lines in the run output).
 - `reel.mp4` — `ffprobe out/<slug>/reel.mp4` should show 1080×1920 H.264+AAC with duration
   ≈ your audio. Play it to check caption sync and that images match the scenes.
 - `script.json` / `scene-NN.jpg` — inspect what the models produced. A broken `scene-*.jpg`

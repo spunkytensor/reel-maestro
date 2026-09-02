@@ -318,18 +318,41 @@ fn words_from_whisper_json(v: &Value) -> Vec<WordTiming> {
 }
 
 /// Distribute `total` seconds across the words of `text`, weighting each word by its
-/// syllable count so longer words get proportionally more screen time. Deterministic.
+/// syllable count so longer words get proportionally more screen time. Punctuation adds silence
+/// between words, letting captions and scene cuts reflect natural speech pauses. Deterministic.
 fn estimate(text: &str, total: f64) -> Vec<WordTiming> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return Vec::new();
     }
-    let weights: Vec<f64> = words.iter().map(|w| syllables(w) as f64).collect();
-    let sum: f64 = weights.iter().sum();
+
+    let mut search_start = 0;
+    let word_ends: Vec<usize> = words
+        .iter()
+        .map(|word| {
+            let start = text[search_start..]
+                .find(word)
+                .expect("split_whitespace word must occur in source text")
+                + search_start;
+            search_start = start + word.len();
+            search_start
+        })
+        .collect();
+    let word_weights: Vec<f64> = words.iter().map(|w| syllables(w) as f64).collect();
+    let pause_weights: Vec<f64> = words
+        .iter()
+        .enumerate()
+        .take(words.len() - 1)
+        .map(|(index, word)| {
+            let between = &text[word_ends[index]..word_ends[index + 1] - words[index + 1].len()];
+            pause_weight(word, has_paragraph_break(between))
+        })
+        .collect();
+    let sum: f64 = word_weights.iter().chain(&pause_weights).sum();
 
     let mut out = Vec::with_capacity(words.len());
     let mut t = 0.0;
-    for (w, weight) in words.iter().zip(&weights) {
+    for (index, (w, weight)) in words.iter().zip(&word_weights).enumerate() {
         let dur = total * weight / sum;
         out.push(WordTiming {
             word: w.to_string(),
@@ -337,8 +360,34 @@ fn estimate(text: &str, total: f64) -> Vec<WordTiming> {
             end_s: t + dur,
         });
         t += dur;
+        if let Some(pause_weight) = pause_weights.get(index) {
+            t += total * pause_weight / sum;
+        }
     }
     out
+}
+
+fn has_paragraph_break(between: &str) -> bool {
+    between.bytes().filter(|&byte| byte == b'\n').count() >= 2
+}
+
+/// Silence weights are expressed in syllable-equivalents, so their length scales naturally with
+/// the supplied audio duration. A paragraph break overrides, rather than stacks with, punctuation.
+fn pause_weight(word: &str, paragraph_break: bool) -> f64 {
+    if paragraph_break {
+        return 3.5;
+    }
+
+    let trimmed = word.trim_end_matches(['"', '\'', ')', ']', '}', '”', '’']);
+    if matches!(trimmed.chars().last(), Some('.' | '!' | '?')) {
+        2.5
+    } else if matches!(trimmed.chars().last(), Some(',' | ';' | ':' | '—'))
+        || trimmed.ends_with("--")
+    {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 /// Rough syllable count: number of vowel groups, at least 1.
@@ -512,5 +561,41 @@ mod tests {
         let out = align_text_to_timings("fifty times", &timed);
         assert_eq!(out[0].word, "fifty");
         assert!((out[0].start_s - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_sentence_end_pause_breaks_caption_cards() {
+        let words = estimate("Hello. Again", 6.0);
+        assert!(words[1].start_s - words[0].end_s > 0.2);
+    }
+
+    #[test]
+    fn estimate_comma_pause_is_shorter_than_period_pause() {
+        let comma = estimate("Hello, again", 6.0);
+        let period = estimate("Hello. Again", 6.0);
+        let comma_gap = comma[1].start_s - comma[0].end_s;
+        let period_gap = period[1].start_s - period[0].end_s;
+        assert!(comma_gap > 0.0);
+        assert!(comma_gap < period_gap);
+    }
+
+    #[test]
+    fn estimate_with_pauses_is_monotonic_and_preserves_total_duration() {
+        let words = estimate("First sentence.\n\nSecond, sentence!", 9.0);
+        assert!((words[0].start_s - 0.0).abs() < 1e-9);
+        assert!((words.last().unwrap().end_s - 9.0).abs() < 1e-9);
+        for pair in words.windows(2) {
+            assert!(pair[0].end_s <= pair[1].start_s);
+        }
+    }
+
+    #[test]
+    fn estimate_without_punctuation_preserves_syllable_proportions() {
+        let words = estimate("a summer beach", 8.0);
+        let durations: Vec<f64> = words.iter().map(|word| word.end_s - word.start_s).collect();
+        assert!((durations[1] / durations[0] - 2.0).abs() < 1e-9);
+        assert!((durations[2] / durations[0] - 1.0).abs() < 1e-9);
+        assert!((words[0].end_s - words[1].start_s).abs() < 1e-9);
+        assert!((words[1].end_s - words[2].start_s).abs() < 1e-9);
     }
 }
