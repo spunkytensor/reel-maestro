@@ -240,7 +240,7 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--no-dissolve` | off | Force hard cuts between every scene (disable cross-dissolves). |
 | `--dissolve-seconds <f64>` | `0.5` | Cross-dissolve length for scriptwriter-flagged still→still transitions. |
 | `--no-grade` | off | Disable the unified cinematic colour grade / film grain + cross-scene exposure match. |
-| `--validate-scene <off\|2\|3>` | tier (`2`) | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` / `3` = up to that many candidates at up to N× image cost. Defaults from the quality tier (off on `draft`, 3 on `premium`). |
+| `--validate-scene <off\|2\|3>` | tier (`2`) | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` / `3` = at most that many candidates, for at most N× image cost. Defaults from the quality tier (off on `draft`, 3 on `premium`). |
 | `--no-narration` | off | No spoken voiceover — produce a silent or music-only video. |
 | `--scene-seconds <f64>` | `4.0` | Per-scene length used when `--no-narration` is set (no audio to time against). |
 | `--no-images` | off | Stop right after writing word timings (script + TTS + timing only). Cheap way to test caption timing. |

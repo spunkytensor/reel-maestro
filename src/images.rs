@@ -28,7 +28,8 @@ use crate::openrouter::{self, OpenRouter};
 const MAX_CONCURRENT: usize = 4; // in-flight image generations — caps load on the API/our memory
 const MAX_ATTEMPTS: usize = 3; // per-image retries before falling back to a placeholder
 const MIN_ACCEPTABLE_SCORE: i64 = 60; // QA floor: below this, spend extra re-rolls trying to clear it
-const MAX_VALIDATE_ATTEMPTS: usize = 4; // hard cap on candidates/scene when chasing the QA floor
+/// Absolute ceiling on scene candidates; validation never exceeds the user's requested budget.
+const MAX_VALIDATE_ATTEMPTS: usize = 4;
 
 /// A consistent photographic "house look" appended to every SCENE and poster prompt so the whole
 /// reel reads as one real shoot rather than a set of independent AI stills. Kept OFF the reference
@@ -74,6 +75,12 @@ struct Verdict {
     score: i64,
     /// Brief description of any problems found (empty when consistent).
     issues: String,
+}
+
+/// Return the image-generation budget for one scene. Validation off still generates one unjudged
+/// candidate; otherwise, cap the configured validation budget without ever increasing it.
+fn attempt_budget(validate: usize) -> usize {
+    validate.clamp(1, MAX_VALIDATE_ATTEMPTS)
 }
 
 /// Generate one image per scene into `dir`, returning their paths in scene order.
@@ -242,19 +249,14 @@ async fn render_scene(
 
     let label = format!("scene {i}");
     // Per-scene validation: when `validate` is on, a vision judge scores each candidate and we keep
-    // the most consistent, re-rolling up to `nominal` candidates and stopping early on a
-    // fully-consistent one. If the best so far is still below the quality floor (a malformed or
-    // badly-drifting frame), we spend a few EXTRA re-rolls (up to MAX_VALIDATE_ATTEMPTS) trying to
-    // clear it before settling. `validate == 0` skips the judge (one candidate). A scene with no
-    // references is still judged, on a reduced rubric (composition + anatomy/structure only) —
-    // a standalone frame can be malformed too.
+    // the most consistent, re-rolling within the requested candidate budget and stopping early on a
+    // fully-consistent one. If the best so far is below the quality floor (a malformed or
+    // badly-drifting frame), use the remaining requested re-rolls trying to clear it before
+    // settling. `validate == 0` skips the judge (one candidate). A scene with no references is
+    // still judged, on a reduced rubric (composition + anatomy/structure only) — a standalone
+    // frame can be malformed too.
     let validate = ctx.validate >= 1;
-    let nominal = ctx.validate.max(1);
-    let max_attempts = if validate {
-        nominal.max(MAX_VALIDATE_ATTEMPTS)
-    } else {
-        1
-    };
+    let max_attempts = attempt_budget(ctx.validate);
     let mut best: Option<(RgbImage, i64)> = None;
     let mut rerolled = false;
     for attempt in 1..=max_attempts {
@@ -297,15 +299,12 @@ async fn render_scene(
                 if attempt >= max_attempts {
                     break; // out of re-roll budget
                 }
-                if attempt >= nominal && best_score >= MIN_ACCEPTABLE_SCORE {
-                    break; // spent the normal budget and the best is at least acceptable
-                }
-                // Otherwise re-roll: still within the normal budget, or below the floor with budget
-                // left. Below the floor past `nominal`, we're spending extra tries chasing a clean one.
+                // Otherwise re-roll within the requested budget. Below the floor, use every
+                // remaining requested try chasing a clean frame.
                 rerolled = true;
                 let below_floor = best_score < MIN_ACCEPTABLE_SCORE;
-                let ceiling = if below_floor { max_attempts } else { nominal };
-                let why = if attempt >= nominal && below_floor {
+                let ceiling = max_attempts;
+                let why = if below_floor {
                     ", below quality floor"
                 } else {
                     ""
@@ -977,14 +976,26 @@ fn placeholder(idx: usize, canvas: Canvas) -> RgbImage {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_image_prompt, build_location_ref_prompt, judge_instruction, location_anchors, slug,
-        Reference,
+        attempt_budget, build_image_prompt, build_location_ref_prompt, judge_instruction,
+        location_anchors, slug, Reference, MAX_VALIDATE_ATTEMPTS,
     };
     use crate::config::Canvas;
     use crate::model::{Entity, Scene};
 
     const REEL: Canvas = Canvas { w: 1080, h: 1920 };
     const YT: Canvas = Canvas { w: 1920, h: 1080 };
+
+    #[test]
+    fn validation_attempt_budget_never_exceeds_requested_candidates() {
+        assert_eq!(attempt_budget(0), 1);
+        assert_eq!(attempt_budget(2), 2);
+        assert_eq!(attempt_budget(3), 3);
+        assert_eq!(attempt_budget(MAX_VALIDATE_ATTEMPTS), MAX_VALIDATE_ATTEMPTS);
+        assert_eq!(
+            attempt_budget(MAX_VALIDATE_ATTEMPTS + 1),
+            MAX_VALIDATE_ATTEMPTS
+        );
+    }
 
     fn ent(id: &str, desc: &str) -> Entity {
         Entity {
