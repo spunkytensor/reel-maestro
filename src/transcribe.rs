@@ -32,8 +32,9 @@ use crate::model::WordTiming;
 /// Word timings plus a `coverage` score in `[0, 1]`: the fraction of the narration that whisper
 /// actually transcribed (raw whisper tokens ÷ narration words, capped at 1). A low value means the
 /// audio was truncated — far fewer words were spoken than the script has — which the caller uses to
-/// re-synthesize. When whisper is unavailable and timings are estimated, coverage is 1.0 (the
-/// estimate spans the whole audio, so there's no truncation signal to act on).
+/// re-synthesize. When whisper is unavailable and timings are estimated, coverage compares the
+/// audio duration with the expected duration at [`crate::config::WORDS_PER_MINUTE`], adjusted for
+/// the requested TTS speed.
 pub struct Timings {
     pub words: Vec<WordTiming>,
     pub coverage: f64,
@@ -44,6 +45,7 @@ pub fn word_timings(
     audio: &Path,
     narration: &str,
     debug_out: &Path,
+    speed: f64,
 ) -> Result<Timings> {
     let narr_words = narration.split_whitespace().count().max(1);
     // 1. Real timings from local whisper-timestamped, re-texted to the narration script so
@@ -60,14 +62,22 @@ pub fn word_timings(
                 "  note: {} produced no word timings; estimating instead",
                 cfg.whisper_cmd
             );
-            (estimate_from_audio(audio, narration)?, 1.0)
+            let duration_s = ffmpeg::duration_s(audio)?;
+            (
+                estimate_from_duration(narration, duration_s),
+                estimated_coverage(duration_s, narr_words, speed),
+            )
         }
         Err(e) => {
             eprintln!(
                 "  note: local word timing via `{}` unavailable ({e}); estimating instead",
                 cfg.whisper_cmd
             );
-            (estimate_from_audio(audio, narration)?, 1.0)
+            let duration_s = ffmpeg::duration_s(audio)?;
+            (
+                estimate_from_duration(narration, duration_s),
+                estimated_coverage(duration_s, narr_words, speed),
+            )
         }
     };
 
@@ -75,10 +85,17 @@ pub fn word_timings(
     Ok(Timings { words, coverage })
 }
 
-fn estimate_from_audio(audio: &Path, narration: &str) -> Result<Vec<WordTiming>> {
-    let dur = ffmpeg::duration_s(audio)?;
-    eprintln!("  note: estimating word timings from audio length ({dur:.1}s)");
-    Ok(estimate(narration, dur))
+fn estimate_from_duration(narration: &str, duration_s: f64) -> Vec<WordTiming> {
+    eprintln!("  note: estimating word timings from audio length ({duration_s:.1}s)");
+    estimate(narration, duration_s)
+}
+
+/// Estimate how much narration is present from duration when word-level ASR is unavailable.
+/// The expected duration uses the narration pace used for script budgets and is adjusted for the
+/// pitch-preserving TTS tempo multiplier.
+fn estimated_coverage(audio_seconds: f64, word_count: usize, speed: f64) -> f64 {
+    let expected_seconds = word_count as f64 * 60.0 / crate::config::WORDS_PER_MINUTE / speed;
+    (audio_seconds / expected_seconds).min(1.0)
 }
 
 /// Re-text whisper's timed tokens with the authoritative narration words. We align the two
@@ -344,6 +361,14 @@ mod tests {
             assert!(pair[1].start_s >= pair[0].start_s);
             assert!((pair[0].end_s - pair[1].start_s).abs() < 1e-9); // contiguous
         }
+    }
+
+    #[test]
+    fn estimated_coverage_tracks_audio_duration() {
+        let words = 145;
+        let expected_seconds = 60.0;
+        assert!((estimated_coverage(expected_seconds, words, 1.0) - 1.0).abs() < 1e-9);
+        assert!((estimated_coverage(expected_seconds / 2.0, words, 1.0) - 0.5).abs() < 1e-9);
     }
 
     #[test]

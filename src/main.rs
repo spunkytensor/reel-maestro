@@ -655,7 +655,7 @@ async fn synthesize_with_coverage(
     let mut best: Option<(Vec<model::WordTiming>, f64, Vec<u8>)> = None;
     for attempt in 1..=TTS_ATTEMPTS {
         tts::synthesize(or, narration, audio_path, speed).await?;
-        let t = transcribe::word_timings(cfg, audio_path, narration, words_scratch)?;
+        let t = transcribe::word_timings(cfg, audio_path, narration, words_scratch, speed)?;
         println!(
             "  {} words timed (~{:.0}% of the text spoken)",
             t.words.len(),
@@ -740,7 +740,7 @@ async fn synthesize_per_chapter(
         "→ timing narration ({} {}) ...",
         cfg.whisper_cmd, cfg.whisper_model
     );
-    let t = transcribe::word_timings(cfg, audio, &script.narration, words_path)?;
+    let t = transcribe::word_timings(cfg, audio, &script.narration, words_path, speed)?;
     println!(
         "  {} words timed (~{:.0}% of the script spoken)",
         t.words.len(),
