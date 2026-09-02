@@ -51,6 +51,17 @@ pub struct OpenRouter {
     pub aspect: String,
 }
 
+enum StructuredJsonAttemptError {
+    Request(anyhow::Error),
+    Parse { reply: String, error: anyhow::Error },
+}
+
+impl From<anyhow::Error> for StructuredJsonAttemptError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Request(error)
+    }
+}
+
 impl OpenRouter {
     /// Build the client from resolved config. The HTTP client carries a generous 300s timeout
     /// because image/TTS/music generations are slow; video uses its own polling loop instead.
@@ -99,7 +110,7 @@ impl OpenRouter {
         schema: Value,
     ) -> Result<T> {
         const ATTEMPTS: usize = 3;
-        let body = json!({
+        let mut body = json!({
             "model": self.text_model,
             "messages": [
                 {"role": "system", "content": system},
@@ -112,9 +123,9 @@ impl OpenRouter {
         });
         let mut last_err = anyhow!("chat_json made no attempts");
         for attempt in 1..=ATTEMPTS {
-            match self.chat_json_once(&body).await {
+            match self.structured_json_once(&body, "chat").await {
                 Ok(t) => return Ok(t),
-                Err(e) => {
+                Err(StructuredJsonAttemptError::Request(e)) => {
                     if attempt < ATTEMPTS {
                         eprintln!(
                             "  structured chat failed ({e:#}); retrying ({}/{ATTEMPTS})",
@@ -125,18 +136,41 @@ impl OpenRouter {
                     }
                     last_err = e;
                 }
+                Err(StructuredJsonAttemptError::Parse { reply, error }) => {
+                    if attempt < ATTEMPTS {
+                        append_json_correction(&mut body, &reply, &error);
+                        eprintln!(
+                            "  structured chat failed ({error:#}); retrying ({}/{ATTEMPTS})",
+                            attempt + 1
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
+                            .await;
+                    }
+                    last_err = error;
+                }
             }
         }
         Err(last_err)
     }
 
-    /// One structured-chat attempt: request, surface non-2xx, extract the message text, parse.
-    async fn chat_json_once<T: DeserializeOwned>(&self, body: &Value) -> Result<T> {
-        let v = json_or_err(self.post("/chat/completions").json(body).send().await?).await?;
-        let content =
-            message_text(&v).ok_or_else(|| anyhow!("no message content in chat response: {v}"))?;
-        serde_json::from_str(&content).with_context(|| {
-            format!("could not parse structured output as expected schema: {content}")
+    /// One structured-output attempt: request, surface non-2xx, extract the message text, parse.
+    async fn structured_json_once<T: DeserializeOwned>(
+        &self,
+        body: &Value,
+        kind: &str,
+    ) -> std::result::Result<T, StructuredJsonAttemptError> {
+        let response = self
+            .post("/chat/completions")
+            .json(body)
+            .send()
+            .await
+            .map_err(anyhow::Error::from)?;
+        let v = json_or_err(response).await?;
+        let reply = message_text(&v)
+            .ok_or_else(|| anyhow!("no message content in {kind} response: {v}"))?;
+        serde_json::from_str(&reply).map_err(|error| StructuredJsonAttemptError::Parse {
+            reply: reply.clone(),
+            error: anyhow!("could not parse {kind} output as expected schema: {error}"),
         })
     }
 
@@ -158,7 +192,7 @@ impl OpenRouter {
             content.push(json!({ "type": "text", "text": label }));
             content.push(json!({ "type": "image_url", "image_url": { "url": url } }));
         }
-        let body = json!({
+        let mut body = json!({
             "model": self.judge_model,
             "messages": [
                 {"role": "system", "content": system},
@@ -171,27 +205,26 @@ impl OpenRouter {
         });
         let mut last_err = anyhow!("judge_json made no attempts");
         for attempt in 1..=ATTEMPTS {
-            match self.judge_json_once(&body).await {
+            match self.structured_json_once(&body, "judge").await {
                 Ok(t) => return Ok(t),
-                Err(e) => {
+                Err(StructuredJsonAttemptError::Request(e)) => {
                     if attempt < ATTEMPTS {
                         tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
                             .await;
                     }
                     last_err = e;
                 }
+                Err(StructuredJsonAttemptError::Parse { reply, error }) => {
+                    if attempt < ATTEMPTS {
+                        append_json_correction(&mut body, &reply, &error);
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
+                            .await;
+                    }
+                    last_err = error;
+                }
             }
         }
         Err(last_err)
-    }
-
-    /// One judge attempt: request, surface non-2xx, extract the message text, parse.
-    async fn judge_json_once<T: DeserializeOwned>(&self, body: &Value) -> Result<T> {
-        let v = json_or_err(self.post("/chat/completions").json(body).send().await?).await?;
-        let reply =
-            message_text(&v).ok_or_else(|| anyhow!("no message content in judge response: {v}"))?;
-        serde_json::from_str(&reply)
-            .with_context(|| format!("could not parse judge output as expected schema: {reply}"))
     }
 
     /// Image generation through the chat-completions `modalities` path. Optional `references` are
@@ -859,6 +892,20 @@ fn message_text(v: &Value) -> Option<String> {
     None
 }
 
+/// Extend a failed structured-output request so a retry asks the model to repair its reply.
+fn append_json_correction(body: &mut Value, reply: &str, error: &anyhow::Error) {
+    let messages = body["messages"]
+        .as_array_mut()
+        .expect("structured request body has messages");
+    messages.push(json!({ "role": "assistant", "content": reply }));
+    messages.push(json!({
+        "role": "user",
+        "content": format!(
+            "That was not valid JSON matching the schema: {error}. Reply with ONLY the corrected JSON object."
+        ),
+    }));
+}
+
 fn image_content(prompt: &str, references: &[(String, String)]) -> Value {
     if references.is_empty() {
         return json!(prompt);
@@ -893,6 +940,28 @@ mod tests {
         assert!(should_retry_poll(1));
         assert!(should_retry_poll(MAX_CONSECUTIVE_POLL_FAILURES - 1));
         assert!(!should_retry_poll(MAX_CONSECUTIVE_POLL_FAILURES));
+    }
+
+    #[test]
+    fn json_correction_changes_retry_request_body() {
+        let mut body = json!({
+            "messages": [{ "role": "user", "content": "Return a JSON object." }],
+            "response_format": { "type": "json_schema" },
+        });
+        let first_body = body.clone();
+
+        append_json_correction(&mut body, "not json", &anyhow!("expected a string"));
+
+        assert_ne!(body, first_body);
+        assert_eq!(
+            body["messages"][1],
+            json!({ "role": "assistant", "content": "not json" })
+        );
+        assert_eq!(
+            body["messages"][2]["content"],
+            "That was not valid JSON matching the schema: expected a string. Reply with ONLY the corrected JSON object."
+        );
+        assert_eq!(body["response_format"], first_body["response_format"]);
     }
 
     #[test]
