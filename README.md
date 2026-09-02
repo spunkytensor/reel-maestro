@@ -227,7 +227,7 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--music-volume <f64>` | `0.6` | Background music gain. Higher = louder; raise toward `1.0`+ for a stronger bed. |
 | `--video` | off | Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video model/resolution (default Veo 3.1 Lite ≈ $0.05/sec at 720p). |
 | `--video-scenes <N>` | — | Render only the first N scenes as video; the rest stay Ken Burns stills (caps cost). |
-| `--video-resolution <res>` | tier (`720p`) | Veo clip resolution (`720p`/`1080p`). Defaults from the quality tier (`1080p` on `premium`). |
+| `--video-resolution <res>` | tier (`720p`) | Video clip resolution: `720p` or `1080p` (case-insensitive; invalid values fail before generation). Defaults from the quality tier (`1080p` on `premium`). |
 | `--quality <draft\|standard\|premium>` | `standard` | Quality/cost tier presetting the model defaults: `draft` = cheapest models + validation off (~3-5x cheaper); `premium` = Opus script, Veo 3.1 Fast 1080p, deepest validation. Explicit model flags/envs still override. |
 | `--format <reel\|youtube>` | `reel` | Output format. `youtube` = landscape 16:9 long-form with a chaptered script, per-chapter TTS + rendering, a 1280x720 thumbnail, and a `youtube.md` metadata file (title/description/tags/chapter timestamps). |
 | `--minutes <N>` | `3` | Target length in minutes for `--format youtube` (1-12). Drives the narration word budget, scene count, and chapter count (~1/min). |
@@ -421,6 +421,8 @@ reelmaestro --topic "..." --video --video-resolution 1080p --video-model google/
 - Cost scales with total video seconds. Each scene is billed at its clip length, clamped to
   Veo's 4–8s range. Reel Maestro prints an estimate before generating, e.g.
   `→ generating 2 video scene(s) (google/veo-3.1-lite, ~12s ≈ $0.60) ...`.
+- An unrecognized `--video-model` is estimated conservatively at $0.40/sec and the printed
+  estimate is explicitly marked as a guess.
 - Generation is **non-fatal per scene**: if a clip fails (or the job times out), that scene
   falls back to its Ken Burns still — one bad/expensive clip never kills the run.
 - **Clips are reused, so you can regenerate just one scene.** A scene's clip is saved as

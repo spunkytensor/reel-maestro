@@ -530,8 +530,13 @@ async fn run(cli: &Cli) -> Result<()> {
             } else {
                 String::new()
             };
+            let estimate_note = if config::video_cost_is_guess(&or.video_model) {
+                " (estimate: unknown model, assuming $0.40/s)"
+            } else {
+                ""
+            };
             println!(
-                "→ generating {} video scene(s){reuse_note} ({}, ~{secs}s ≈ ${:.2}) ...",
+                "→ generating {} video scene(s){reuse_note} ({}, ~{secs}s ≈ ${:.2}){estimate_note} ...",
                 to_make.len(),
                 or.video_model,
                 secs as f64 * config::video_cost_per_second(&or.video_model, &cfg.video_resolution)
@@ -852,7 +857,7 @@ async fn resolve_music(
     println!(
         "→ generating soundtrack ({}, ~${:.2}) ...",
         or.music_model,
-        config::music_cost(&or.music_model)
+        config::music_cost()
     );
     println!("  prompt: {music_prompt}");
 

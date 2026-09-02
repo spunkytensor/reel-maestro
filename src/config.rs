@@ -144,8 +144,9 @@ pub fn tier_defaults(q: Quality) -> TierDefaults {
 
 /// Estimated video cost per second by model and resolution (July 2026 OpenRouter pricing:
 /// Veo 3.1 Lite $0.05/$0.08, Fast $0.10/$0.12, Standard $0.40; Wan 2.6 from $0.04; Seedance
-/// 2.0 Fast from ~$0.054, plain ~$0.067; Kling v3.0 from $0.126). An unrecognized model falls
-/// back to the cheapest rate so an estimate still prints rather than nothing.
+/// 2.0 Fast from ~$0.054, plain ~$0.067; Kling v3.0 from $0.126). An unrecognized model uses
+/// the highest known rate ($0.40/s) so the estimate is conservative; callers can label it as a
+/// guess with [`video_cost_is_guess`].
 pub fn video_cost_per_second(model: &str, resolution: &str) -> f64 {
     let hd = resolution.trim().starts_with("1080");
     if model.contains("veo-3.1-lite") {
@@ -171,13 +172,30 @@ pub fn video_cost_per_second(model: &str, resolution: &str) -> f64 {
     } else if model.contains("kling") {
         0.126
     } else {
-        0.05
+        0.40
     }
 }
 
+/// Whether a video-cost estimate uses the conservative unknown-model fallback.
+pub fn video_cost_is_guess(model: &str) -> bool {
+    !(model.contains("veo")
+        || model.contains("wan-2.6")
+        || model.contains("seedance")
+        || model.contains("kling"))
+}
+
 /// Estimated flat cost per generated music track (Lyria bills per track, not per second).
-pub fn music_cost(_model: &str) -> f64 {
+pub fn music_cost() -> f64 {
     0.08
+}
+
+/// Normalize a video resolution accepted by the video API.
+fn normalize_video_resolution(resolution: String) -> Result<String> {
+    match resolution.trim().to_ascii_lowercase().as_str() {
+        "720p" => Ok("720p".to_string()),
+        "1080p" => Ok("1080p".to_string()),
+        _ => bail!("invalid video resolution {resolution:?}; accepted values are 720p and 1080p"),
+    }
 }
 
 /// Fully resolved settings for one run. Every field has already been collapsed from the
@@ -300,11 +318,11 @@ impl Config {
                 .voice
                 .clone()
                 .or_else(|| std::env::var("REELMAESTRO_VOICE").ok()),
-            video_resolution: pick(
+            video_resolution: normalize_video_resolution(pick(
                 &cli.video_resolution,
                 "REELMAESTRO_VIDEO_RESOLUTION",
                 tier.video_resolution,
-            ),
+            ))?,
             validate_scene: cli
                 .validate_scene
                 .or_else(|| {
@@ -375,8 +393,9 @@ fn env_flag(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas, chapter_count, music_cost, poster_canvas, scene_budget, tier_defaults,
-        video_cost_per_second, word_budget, Canvas, Format, Quality,
+        canvas, chapter_count, music_cost, normalize_video_resolution, poster_canvas, scene_budget,
+        tier_defaults, video_cost_is_guess, video_cost_per_second, word_budget, Canvas, Format,
+        Quality,
     };
 
     #[test]
@@ -455,12 +474,32 @@ mod tests {
             video_cost_per_second("kwaivgi/kling-v3.0-std", "720p"),
             0.126
         );
-        // Unknown model → cheapest-rate fallback so an estimate still prints.
-        assert_eq!(video_cost_per_second("someone/other-video", "720p"), 0.05);
+        let known_rates = [0.05, 0.08, 0.10, 0.12, 0.40, 0.04, 0.054, 0.067, 0.126];
+        let unknown_rate = video_cost_per_second("someone/other-video", "720p");
+        assert!(unknown_rate >= known_rates.into_iter().fold(0.0, f64::max));
+        assert!(video_cost_is_guess("someone/other-video"));
+        assert!(!video_cost_is_guess("google/veo-3.1-lite"));
     }
 
     #[test]
     fn music_cost_is_flat_per_track() {
-        assert_eq!(music_cost("google/lyria-3-pro-preview"), 0.08);
+        assert_eq!(music_cost(), 0.08);
+    }
+
+    #[test]
+    fn video_resolution_is_normalized_and_validated() {
+        assert_eq!(
+            normalize_video_resolution("720P".to_string()).unwrap(),
+            "720p"
+        );
+        assert_eq!(
+            normalize_video_resolution(" 1080p ".to_string()).unwrap(),
+            "1080p"
+        );
+
+        let err = normalize_video_resolution("4k".to_string()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("accepted values are 720p and 1080p"));
     }
 }
