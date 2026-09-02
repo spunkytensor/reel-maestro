@@ -202,17 +202,22 @@ fn header(style: &CaptionStyle) -> String {
                 style.font, style.font_size, style.margin_lr, style.margin_lr, style.margin_v
             ),
         ),
+        // Karaoke: libass draws the not-yet-sung part of a `\kf` word in SecondaryColour and
+        // sweeps PrimaryColour across it as its duration elapses — so Primary is the yellow
+        // highlight and Secondary the resting white.
         CaptionPreset::Karaoke => (
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
             format!(
-                "Style: Burst,{},{},&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,{},{},{},1",
+                "Style: Burst,{},{},&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,{},{},{},1",
                 style.font, style.font_size, style.margin_lr, style.margin_lr, style.margin_v
             ),
         ),
+        // Boxed: BorderStyle 3 draws an opaque box in OutlineColour behind the text; the Outline
+        // width becomes the box padding, so keep it non-zero.
         CaptionPreset::Boxed => (
             "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
             format!(
-                "Style: Burst,{},{},&H00FFFFFF,&H00181818,&H00181818,-1,0,0,0,100,100,0,0,3,0,0,2,{},{},{},1",
+                "Style: Burst,{},{},&H00FFFFFF,&H00181818,&H00181818,-1,0,0,0,100,100,0,0,3,12,0,2,{},{},{},1",
                 style.font, style.font_size, style.margin_lr, style.margin_lr, style.margin_v
             ),
         ),
@@ -255,14 +260,21 @@ fn dialogue(card: &Card, style: &CaptionStyle) -> String {
     )
 }
 
-/// ASS karaoke text with one `\k` duration tag per word. `\k` is measured in centiseconds;
-/// each duration comes from its word's own spoken timing and is at least one centisecond.
+/// ASS karaoke text with one `\kf` (sweep-fill) duration tag per word, in centiseconds. Each
+/// word's tag runs from its own start until the NEXT word starts (the last until the card ends),
+/// so the sweeps tile the card with no dead time at the short intra-card gaps; at least 1 cs.
 fn karaoke_text(card: &Card) -> String {
     card.words
         .iter()
-        .map(|word| {
-            let duration_cs = ((word.end_s - word.start_s) * 100.0).round().max(1.0) as u64;
-            format!("{{\\k{duration_cs}}}{}", word.word.to_uppercase())
+        .enumerate()
+        .map(|(i, word)| {
+            let next_start = card
+                .words
+                .get(i + 1)
+                .map(|w| w.start_s)
+                .unwrap_or(card.end_s);
+            let duration_cs = ((next_start - word.start_s) * 100.0).round().max(1.0) as u64;
+            format!("{{\\kf{duration_cs}}}{}", word.word.to_uppercase())
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -386,17 +398,34 @@ mod tests {
             w("three", 0.67, 1.0),
         ]);
         let text = karaoke_text(&cards[0]);
-        assert_eq!(text, "{\\k33}ONE {\\k34}TWO {\\k33}THREE");
+        assert_eq!(text, "{\\kf33}ONE {\\kf34}TWO {\\kf33}THREE");
         let duration_sum: u64 = [33, 34, 33].into_iter().sum();
         let card_duration = ((cards[0].end_s - cards[0].start_s) * 100.0).round() as i64;
         assert!((duration_sum as i64 - card_duration).abs() <= 1);
     }
 
     #[test]
+    fn karaoke_tags_absorb_intra_card_gaps() {
+        // A 0.1 s gap (below MAX_GAP_S) stays inside the card; the preceding word's sweep runs
+        // through it so the highlight never goes dark mid-card.
+        let cards = pack_cards(&[w("one", 0.0, 0.4), w("two", 0.5, 1.0)]);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(karaoke_text(&cards[0]), "{\\kf50}ONE {\\kf50}TWO");
+    }
+
+    #[test]
+    fn karaoke_style_highlights_in_yellow_over_white() {
+        let style = CaptionStyle::for_format_and_preset(Format::Reel, CaptionPreset::Karaoke, None);
+        let ass = build_ass(&[], &style);
+        assert!(ass.contains("PrimaryColour, SecondaryColour,"));
+        assert!(ass.contains("Style: Burst,DejaVu Sans,96,&H0000FFFF,&H00FFFFFF,"));
+    }
+
+    #[test]
     fn boxed_preset_uses_opaque_box_border_style() {
         let style = CaptionStyle::for_format_and_preset(Format::Reel, CaptionPreset::Boxed, None);
         let ass = build_ass(&[], &style);
-        assert!(ass.contains("&H00181818,&H00181818,-1,0,0,0,100,100,0,0,3,0,0,2,"));
+        assert!(ass.contains("&H00181818,&H00181818,-1,0,0,0,100,100,0,0,3,12,0,2,"));
     }
 
     #[test]

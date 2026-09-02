@@ -223,7 +223,7 @@ Final audio is normalized in a single pass toward −14 LUFS for social-platform
 | `--topic` / `--brief` / `--script` / `--url` | — | Input mode (exactly one). `--brief <file>` = AI writes from your notes; `--script <file>` = verbatim narration. |
 | `--from <dir>` | — | Resume a prior run folder: reuse its script/audio/captions/images and just re-render (e.g. add `--video`). |
 | `--out <dir>` | `out` | Output root directory. |
-| `--dry-run` | off | Print an itemized, upper-bound cost estimate and exit before any paid API call. |
+| `--dry-run` | off | Print an itemized, upper-bound cost estimate and exit before any paid API call. On a `--from` resume the estimate covers only what's missing from the run folder (stills, clips, a requested soundtrack). |
 | `--max-cost <USD>` | — | Abort before paid API calls when the projected upper-bound estimate exceeds this USD amount. Also available as `REELMAESTRO_MAX_COST`. |
 | `--voice <name>` | auto | TTS voice (model-dependent). If unset, auto-picked from the script's narrator gender (male → `Puck`, female/neutral → `Kore`). |
 | `--speed <f64>` | `1.0` | Narration tempo (0.5–2.0), pitch-preserving. |
@@ -260,7 +260,8 @@ Final audio is normalized in a single pass toward −14 LUFS for social-platform
 ### Caption styles
 
 `--caption-style burst` preserves the original large word-burst treatment. Choose `karaoke` to
-sweep a yellow highlight across each timed word, `boxed` for white text on an opaque dark box, or
+sweep a yellow highlight across each word as it is spoken (ASS `\kf` karaoke timing from the
+word timings), `boxed` for white text on an opaque dark box, or
 `minimal` for smaller, thinner-outlined captions placed lower on the frame. Use
 `--caption-font "Font Family"` when that font is installed where ffmpeg runs.
 

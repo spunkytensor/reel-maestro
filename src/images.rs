@@ -240,7 +240,7 @@ pub async fn generate(
 }
 
 /// Return the zero-based scene indices whose stills are absent from a prior run directory.
-fn missing_scenes(dir: &Path, n: usize) -> Vec<usize> {
+pub(crate) fn missing_scenes(dir: &Path, n: usize) -> Vec<usize> {
     (0..n)
         .filter(|&i| !dir.join(format!("scene-{i:02}.jpg")).exists())
         .collect()

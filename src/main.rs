@@ -266,6 +266,66 @@ fn preflight_cost_estimate(cli: &Cli, cfg: &Config) -> config::CostEstimate {
     )
 }
 
+/// The paid work a `--from` resume can still incur: only the stills that are missing from the
+/// run folder (plus a missing poster), the video clips not yet on disk, and an explicitly
+/// requested soundtrack — the script and narration are reused. Clip lengths are approximated by
+/// splitting the stored narration evenly across scenes (the real word-aligned windows aren't
+/// known until the timeline is built).
+fn resume_cost_estimate(
+    cli: &Cli,
+    cfg: &Config,
+    script: &model::Script,
+    dir: &std::path::Path,
+    video_model: &str,
+) -> config::CostEstimate {
+    let n = script.scenes.len();
+    let candidates_per_scene = cfg.validate_scene.max(1);
+    let image_count = images::missing_scenes(dir, n).len() * candidates_per_scene
+        + usize::from(!dir.join("poster.jpg").exists());
+    let video_count = match cli.video_scenes {
+        Some(count) => count.min(n),
+        None if cli.video => n,
+        None => 0,
+    };
+    let to_make: Vec<usize> = (0..video_count)
+        .filter(|&i| !dir.join(format!("scene-{i:02}.mp4")).exists())
+        .collect();
+    let total_s = ffmpeg::duration_s(&dir.join("audio.mp3")).unwrap_or(60.0);
+    let durations = vec![total_s / n.max(1) as f64; n];
+    let video_seconds = video::billed_seconds_for(video_model, &durations, &to_make);
+
+    config::CostEstimate {
+        script: 0.0,
+        narration: 0.0,
+        images: config::image_cost(&cfg.image_model) * image_count as f64,
+        video: config::video_cost_per_second(video_model, &cfg.video_resolution)
+            * video_seconds as f64,
+        music: if cli.music_gen {
+            config::music_cost()
+        } else {
+            0.0
+        },
+    }
+}
+
+/// Print the estimate (itemized under `--dry-run`) and apply `--max-cost`. Returns `true` when
+/// the run should stop here (dry run); errors when the estimate exceeds the ceiling.
+fn enforce_cost_guard(cli: &Cli, cfg: &Config, estimate: &config::CostEstimate) -> Result<bool> {
+    print_cost_estimate(estimate, cli.dry_run);
+    if cli.dry_run {
+        return Ok(true);
+    }
+    if let Some(max_cost) = cfg.max_cost {
+        if estimate.total() > max_cost {
+            bail!(
+                "projected cost ≤ ${:.2} exceeds --max-cost ${max_cost:.3}; aborting before paid API calls",
+                estimate.total()
+            );
+        }
+    }
+    Ok(false)
+}
+
 fn print_cost_estimate(estimate: &config::CostEstimate, itemized: bool) {
     if !itemized {
         println!(
@@ -312,18 +372,10 @@ async fn run(cli: &Cli) -> Result<()> {
         bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
     }
     let cfg = Config::load(cli)?;
-    let estimate = preflight_cost_estimate(cli, &cfg);
-    print_cost_estimate(&estimate, cli.dry_run);
-    if cli.dry_run {
+    // Cost guard for fresh runs: an upper-bound estimate before the first paid call (the script).
+    // A `--from` resume is estimated later, once the stored script and assets are known.
+    if cli.from.is_none() && enforce_cost_guard(cli, &cfg, &preflight_cost_estimate(cli, &cfg))? {
         return Ok(());
-    }
-    if let Some(max_cost) = cfg.max_cost {
-        if estimate.total() > max_cost {
-            bail!(
-                "projected cost ≤ ${:.2} exceeds --max-cost ${max_cost:.3}; aborting before paid API calls",
-                estimate.total()
-            );
-        }
     }
     let mut or = OpenRouter::new(&cfg)?;
 
@@ -444,6 +496,18 @@ async fn run(cli: &Cli) -> Result<()> {
     // model the first run would have. An explicit --video-model/env still wins.
     if !cfg.video_model_explicit && format == config::Format::Youtube {
         or.video_model = "alibaba/wan-2.6".to_string();
+    }
+
+    // Cost guard for resumes: only the assets still missing from the folder (or newly requested,
+    // like --video clips / --music-gen) cost anything, so estimate from what's actually on disk.
+    if resume
+        && enforce_cost_guard(
+            cli,
+            &cfg,
+            &resume_cost_estimate(cli, &cfg, &script, &dir, &or.video_model),
+        )?
+    {
+        return Ok(());
     }
 
     // Voice: honor an explicit --voice/REELMAESTRO_VOICE; otherwise auto-pick a male/female

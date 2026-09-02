@@ -782,16 +782,9 @@ pub fn mix_audio(
             args.extend(["-map", "[aout]"].iter().map(|s| s.to_string()));
         }
     } else if loudnorm {
-        args.extend(
-            [
-                "-filter_complex",
-                "[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[anorm]",
-                "-map",
-                "[anorm]",
-            ]
-            .iter()
-            .map(|s| s.to_string()),
-        );
+        args.push("-filter_complex".into());
+        args.push(format!("[0:a]{}[anorm]", loudnorm_filter()));
+        args.extend(["-map", "[anorm]"].iter().map(|s| s.to_string()));
     } else {
         args.extend(["-map", "0:a"].iter().map(|s| s.to_string()));
     }
