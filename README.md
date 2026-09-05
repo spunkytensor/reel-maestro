@@ -454,6 +454,10 @@ reelmaestro --topic "..." --video --video-resolution 1080p --video-model google/
 - Veo is an async job API (submit → poll → download); clips take ~30s–several minutes each,
   generated concurrently. Expect a few minutes of wall-clock for a full `--video` run.
 
+Considering another video model? See the [MiniMax H3 investigation](MINIMAX_H3.md) for
+cloud-provider pricing, integration gaps, and licensing caveats. It is a proposal, not
+an announcement of supported H3 generation.
+
 ## Transitions
 
 Scene boundaries are hard cuts by default, but the scriptwriter marks soft beats (time passing,
