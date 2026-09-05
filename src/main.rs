@@ -81,9 +81,9 @@ pub struct Cli {
     #[arg(long, default_value_t = 0.6)]
     music_volume: f64,
 
-    /// Skip image generation and stop right after writing word timings (cheap caption-timing
-    /// test: runs only script + TTS + word timing, no image/video/music/assembly calls).
-    #[arg(long)]
+    /// Fresh-run caption-timing test: skip image generation and stop after writing word timings
+    /// (script + TTS + word timing only; cannot be combined with --from).
+    #[arg(long, conflicts_with = "from")]
     no_images: bool,
 
     /// Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video
@@ -187,6 +187,25 @@ pub struct Cli {
     whisper_model: Option<String>,
     #[arg(long)]
     video_model: Option<String>,
+
+    /// Print an itemized upper-bound cost estimate and exit before any paid API call.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Abort before paid API calls when the projected estimate exceeds this USD amount.
+    #[arg(long, value_name = "USD")]
+    max_cost: Option<f64>,
+
+    /// Caption appearance: burst, karaoke, boxed, or minimal (default: burst).
+    #[arg(long, value_enum)]
+    caption_style: Option<captions::CaptionPreset>,
+    /// Installed font family to use for captions (default: DejaVu Sans).
+    #[arg(long)]
+    caption_font: Option<String>,
+
+    /// Disable final audio normalization to the social-platform −14 LUFS target.
+    #[arg(long)]
+    no_loudnorm: bool,
 }
 
 /// Parse `--validate-scene`: `off` → 0 (validation disabled, one candidate); `2`/`3` → that many
@@ -199,6 +218,131 @@ pub(crate) fn parse_validate_scene(s: &str) -> Result<usize, String> {
         "3" => Ok(3),
         _ => Err(format!("expected `off`, `2`, or `3` (got {s:?})")),
     }
+}
+
+/// Upper-bound paid-work estimate available before a fresh script has established exact scenes
+/// and durations. Reels use their usual one-minute maximum planning window; YouTube uses its
+/// requested duration. Video seconds are snapped through the same billing rules as generation.
+fn preflight_cost_estimate(cli: &Cli, cfg: &Config) -> config::CostEstimate {
+    let minutes = match cfg.format {
+        config::Format::Reel => 1.0,
+        config::Format::Youtube => cfg.minutes,
+    };
+    let word_count = if cfg.no_narration {
+        0
+    } else {
+        config::word_budget(minutes).1
+    };
+    let scene_count = config::scene_budget(minutes).1;
+    let candidates_per_scene = cfg.validate_scene.max(1);
+    let image_count = if cli.no_images {
+        0
+    } else {
+        scene_count * candidates_per_scene + 1 + usize::from(!cli.no_consistency)
+    };
+    let video_count = match cli.video_scenes {
+        Some(count) => count.min(scene_count),
+        None if cli.video => scene_count,
+        None => 0,
+    };
+    let scene_seconds = if cfg.no_narration {
+        cfg.scene_seconds
+    } else {
+        minutes * 60.0 / scene_count as f64
+    };
+    let durations = vec![scene_seconds; scene_count];
+    let video_indices: Vec<usize> = (0..video_count).collect();
+    let video_seconds = video::billed_seconds_for(&cfg.video_model, &durations, &video_indices);
+
+    config::estimate_run_cost(
+        &cfg.text_model,
+        word_count,
+        &cfg.image_model,
+        image_count,
+        &cfg.video_model,
+        &cfg.video_resolution,
+        video_seconds,
+        cli.music_gen,
+    )
+}
+
+/// The paid work a `--from` resume can still incur: only the stills that are missing from the
+/// run folder (plus a missing poster), the video clips not yet on disk, and an explicitly
+/// requested soundtrack — the script and narration are reused. Clip lengths are approximated by
+/// splitting the stored narration evenly across scenes (the real word-aligned windows aren't
+/// known until the timeline is built).
+fn resume_cost_estimate(
+    cli: &Cli,
+    cfg: &Config,
+    script: &model::Script,
+    dir: &std::path::Path,
+    video_model: &str,
+) -> config::CostEstimate {
+    let n = script.scenes.len();
+    let candidates_per_scene = cfg.validate_scene.max(1);
+    let image_count = images::missing_scenes(dir, n).len() * candidates_per_scene
+        + usize::from(!dir.join("poster.jpg").exists());
+    let video_count = match cli.video_scenes {
+        Some(count) => count.min(n),
+        None if cli.video => n,
+        None => 0,
+    };
+    let to_make: Vec<usize> = (0..video_count)
+        .filter(|&i| !dir.join(format!("scene-{i:02}.mp4")).exists())
+        .collect();
+    let total_s = ffmpeg::duration_s(&dir.join("audio.mp3")).unwrap_or(60.0);
+    let durations = vec![total_s / n.max(1) as f64; n];
+    let video_seconds = video::billed_seconds_for(video_model, &durations, &to_make);
+
+    config::CostEstimate {
+        script: 0.0,
+        narration: 0.0,
+        images: config::image_cost(&cfg.image_model) * image_count as f64,
+        video: config::video_cost_per_second(video_model, &cfg.video_resolution)
+            * video_seconds as f64,
+        music: if cli.music_gen {
+            config::music_cost()
+        } else {
+            0.0
+        },
+    }
+}
+
+/// Print the estimate (itemized under `--dry-run`) and apply `--max-cost`. Returns `true` when
+/// the run should stop here (dry run); errors when the estimate exceeds the ceiling.
+fn enforce_cost_guard(cli: &Cli, cfg: &Config, estimate: &config::CostEstimate) -> Result<bool> {
+    print_cost_estimate(estimate, cli.dry_run);
+    if cli.dry_run {
+        return Ok(true);
+    }
+    if let Some(max_cost) = cfg.max_cost {
+        if estimate.total() > max_cost {
+            bail!(
+                "projected cost ≤ ${:.2} exceeds --max-cost ${max_cost:.3}; aborting before paid API calls",
+                estimate.total()
+            );
+        }
+    }
+    Ok(false)
+}
+
+fn print_cost_estimate(estimate: &config::CostEstimate, itemized: bool) {
+    if !itemized {
+        println!(
+            "  estimated cost: ≤ ${:.2} (use --dry-run for a breakdown)",
+            estimate.total()
+        );
+        return;
+    }
+
+    println!("Estimated cost (up to; USD planning estimates):");
+    println!("  script:    ${:.2}", estimate.script);
+    println!("  narration: ${:.2}", estimate.narration);
+    println!("  images:    ${:.2}", estimate.images);
+    println!("  video:     ${:.2}", estimate.video);
+    println!("  music:     ${:.2}", estimate.music);
+    println!("  total:     ≤ ${:.2}", estimate.total());
+    println!("  note: estimates may differ from provider billing.");
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -228,6 +372,11 @@ async fn run(cli: &Cli) -> Result<()> {
         bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
     }
     let cfg = Config::load(cli)?;
+    // Cost guard for fresh runs: an upper-bound estimate before the first paid call (the script).
+    // A `--from` resume is estimated later, once the stored script and assets are known.
+    if cli.from.is_none() && enforce_cost_guard(cli, &cfg, &preflight_cost_estimate(cli, &cfg))? {
+        return Ok(());
+    }
     let mut or = OpenRouter::new(&cfg)?;
 
     // Resolve/validate the watermark up front (fail fast, before any generation) into an
@@ -349,6 +498,18 @@ async fn run(cli: &Cli) -> Result<()> {
         or.video_model = "alibaba/wan-2.6".to_string();
     }
 
+    // Cost guard for resumes: only the assets still missing from the folder (or newly requested,
+    // like --video clips / --music-gen) cost anything, so estimate from what's actually on disk.
+    if resume
+        && enforce_cost_guard(
+            cli,
+            &cfg,
+            &resume_cost_estimate(cli, &cfg, &script, &dir, &or.video_model),
+        )?
+    {
+        return Ok(());
+    }
+
     // Voice: honor an explicit --voice/REELMAESTRO_VOICE; otherwise auto-pick a male/female
     // voice from the script's narrator gender.
     if cfg.voice.is_none() {
@@ -374,10 +535,33 @@ async fn run(cli: &Cli) -> Result<()> {
         if !audio.exists() {
             bail!("{} has no audio.mp3 to resume from", dir.display());
         }
-        std::fs::read(&words_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        match std::fs::read(&words_path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .with_context(|| format!("could not parse {}", words_path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !cfg.no_narration && !script.narration.trim().is_empty() {
+                    eprintln!(
+                        "  note: {} is missing; re-deriving word timings from {} ...",
+                        words_path.display(),
+                        audio.display()
+                    );
+                    transcribe::word_timings(
+                        &cfg,
+                        &audio,
+                        &script.narration,
+                        &words_path,
+                        cli.speed,
+                    )?
+                    .words
+                } else {
+                    Vec::new()
+                }
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not read {}", words_path.display()));
+            }
+        }
     } else if cfg.no_narration {
         let total = cfg.scene_seconds * script.scenes.len() as f64;
         println!("→ no narration: building silent {total:.1}s timeline ...");
@@ -416,18 +600,21 @@ async fn run(cli: &Cli) -> Result<()> {
     }
 
     // 4. Images ---------------------------------------------------------------
-    // Resume reuses the previewed stills so the video matches exactly what you approved.
+    // Resume reuses previewed stills and regenerates only any deleted/missing scene images.
     let images: Vec<PathBuf> = if resume {
-        let imgs: Vec<PathBuf> = (0..script.scenes.len())
-            .map(|i| dir.join(format!("scene-{i:02}.jpg")))
-            .collect();
-        for p in &imgs {
-            if !p.exists() {
-                bail!("missing {} — cannot resume", p.display());
-            }
-        }
-        println!("→ reusing {} preview images", imgs.len());
-        imgs
+        images::generate(
+            &or,
+            &script.scenes,
+            &script.characters,
+            &script.locations,
+            cli.character_ref.as_deref(),
+            !cli.no_consistency,
+            cfg.validate_scene,
+            canvas,
+            &dir,
+            true,
+        )
+        .await?
     } else {
         println!(
             "→ generating {} images ({}) ...",
@@ -478,6 +665,7 @@ async fn run(cli: &Cli) -> Result<()> {
             validate,
             canvas,
             &dir,
+            false,
         )
         .await?
     };
@@ -507,8 +695,13 @@ async fn run(cli: &Cli) -> Result<()> {
             } else {
                 String::new()
             };
+            let estimate_note = if config::video_cost_is_guess(&or.video_model) {
+                " (estimate: unknown model, assuming $0.40/s)"
+            } else {
+                ""
+            };
             println!(
-                "→ generating {} video scene(s){reuse_note} ({}, ~{secs}s ≈ ${:.2}) ...",
+                "→ generating {} video scene(s){reuse_note} ({}, ~{secs}s ≈ ${:.2}){estimate_note} ...",
                 to_make.len(),
                 or.video_model,
                 secs as f64 * config::video_cost_per_second(&or.video_model, &cfg.video_resolution)
@@ -551,12 +744,17 @@ async fn run(cli: &Cli) -> Result<()> {
         music: music.as_deref(),
         duck,
         music_volume: cli.music_volume,
+        loudnorm: !cli.no_loudnorm,
         captions_on: !cfg.no_captions,
         dissolve: !cli.no_dissolve,
         dissolve_seconds: cli.dissolve_seconds,
         grade: !cli.no_grade,
         canvas,
-        caption_style: captions::CaptionStyle::for_format(format),
+        caption_style: captions::CaptionStyle::for_format_and_preset(
+            format,
+            cfg.caption_style,
+            cfg.caption_font.as_deref(),
+        ),
         chapters: &script.chapters,
         watermark: watermark.as_deref(),
     })?;
@@ -567,6 +765,11 @@ async fn run(cli: &Cli) -> Result<()> {
         match metadata::write_youtube_md(&dir, &script, &durations) {
             Ok(p) => println!("  metadata: {}", p.display()),
             Err(e) => eprintln!("  note: writing youtube.md failed ({e})"),
+        }
+    } else {
+        match metadata::write_reel_md(&dir, &script, durations.iter().sum()) {
+            Ok(p) => println!("  metadata: {}", p.display()),
+            Err(e) => eprintln!("  note: writing metadata.md failed ({e})"),
         }
     }
 
@@ -639,7 +842,7 @@ async fn synthesize_with_coverage(
     let mut best: Option<(Vec<model::WordTiming>, f64, Vec<u8>)> = None;
     for attempt in 1..=TTS_ATTEMPTS {
         tts::synthesize(or, narration, audio_path, speed).await?;
-        let t = transcribe::word_timings(cfg, audio_path, narration, words_scratch)?;
+        let t = transcribe::word_timings(cfg, audio_path, narration, words_scratch, speed)?;
         println!(
             "  {} words timed (~{:.0}% of the text spoken)",
             t.words.len(),
@@ -724,7 +927,7 @@ async fn synthesize_per_chapter(
         "→ timing narration ({} {}) ...",
         cfg.whisper_cmd, cfg.whisper_model
     );
-    let t = transcribe::word_timings(cfg, audio, &script.narration, words_path)?;
+    let t = transcribe::word_timings(cfg, audio, &script.narration, words_path, speed)?;
     println!(
         "  {} words timed (~{:.0}% of the script spoken)",
         t.words.len(),
@@ -829,7 +1032,7 @@ async fn resolve_music(
     println!(
         "→ generating soundtrack ({}, ~${:.2}) ...",
         or.music_model,
-        config::music_cost(&or.music_model)
+        config::music_cost()
     );
     println!("  prompt: {music_prompt}");
 

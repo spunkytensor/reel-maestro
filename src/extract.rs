@@ -5,6 +5,7 @@
 //! we only need the gist, which then feeds the scriptwriter.
 
 use anyhow::{Context, Result};
+use std::time::Duration;
 
 /// Fetch `url` and return its main text content as a single, whitespace-collapsed string.
 ///
@@ -23,6 +24,7 @@ pub async fn fetch_article(url: &str) -> Result<String> {
             env!("CARGO_PKG_VERSION"),
             " (https://github.com/spunkytensor/reel-maestro)"
         ))
+        .timeout(Duration::from_secs(60))
         .build()
         .context("failed to build HTTP client")?;
     let html = client
@@ -41,9 +43,9 @@ pub async fn fetch_article(url: &str) -> Result<String> {
 ///
 /// This is intentionally a heuristic, not a parser: we (1) delete `<script>`/`<style>` blocks
 /// whose *contents* would otherwise leak into the text, (2) drop everything between `<` and `>`
-/// to strip the remaining tags, and (3) collapse runs of whitespace and truncate. The result is
-/// noisy (no entity decoding, nav/boilerplate kept) but the downstream LLM tolerates that, and
-/// avoiding an HTML-parser dependency keeps the binary small.
+/// to strip the remaining tags, (3) decode common HTML entities, and (4) collapse runs of
+/// whitespace and truncate. The result is noisy (nav/boilerplate kept) but the downstream LLM
+/// tolerates that, and avoiding an HTML-parser dependency keeps the binary small.
 fn html_to_text(html: &str) -> String {
     // Remove tag *bodies* first — a plain tag strip would keep the JS/CSS source as text.
     let without_scripts = remove_blocks(html, "script");
@@ -61,10 +63,74 @@ fn html_to_text(html: &str) -> String {
         }
     }
 
+    // Decode entities before collapsing whitespace, so `&nbsp;` is treated as a space.
+    let decoded = decode_entities(&out);
+
     // Collapse whitespace (HTML is full of newlines/indentation) and cap length so the prompt
     // stays cheap; 12k chars is plenty of gist for the scriptwriter.
-    let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.chars().take(12_000).collect()
+}
+
+/// Decode common named HTML entities and valid decimal or hexadecimal numeric entities.
+///
+/// Unknown or malformed entities are left intact. Decoding happens in one pass, so nested
+/// encodings such as `&amp;lt;` become `&lt;`, rather than being decoded twice.
+fn decode_entities(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut remaining = input;
+
+    while let Some(start) = remaining.find('&') {
+        out.push_str(&remaining[..start]);
+        let entity_start = &remaining[start..];
+        let Some(end) = entity_start.find(';') else {
+            out.push_str(entity_start);
+            return out;
+        };
+
+        let entity = &entity_start[1..end];
+        let decoded = match entity {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            "nbsp" => Some('\u{00a0}'),
+            "mdash" => Some('—'),
+            "ndash" => Some('–'),
+            "hellip" => Some('…'),
+            "rsquo" => Some('’'),
+            "lsquo" => Some('‘'),
+            "rdquo" => Some('”'),
+            "ldquo" => Some('“'),
+            "copy" => Some('©'),
+            "reg" => Some('®'),
+            _ => decode_numeric_entity(entity),
+        };
+
+        if let Some(character) = decoded {
+            out.push(character);
+        } else {
+            out.push_str(&entity_start[..=end]);
+        }
+        remaining = &entity_start[end + 1..];
+    }
+
+    out.push_str(remaining);
+    out
+}
+
+fn decode_numeric_entity(entity: &str) -> Option<char> {
+    let digits = entity
+        .strip_prefix("#x")
+        .or_else(|| entity.strip_prefix("#X"));
+    let value = match digits {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => entity
+            .strip_prefix('#')
+            .and_then(|decimal| decimal.parse().ok()),
+    }?;
+    char::from_u32(value)
 }
 
 /// Remove `<tag ...> ... </tag>` blocks (case-insensitive), used to drop scripts/styles.
@@ -148,5 +214,36 @@ mod tests {
     fn passes_through_when_no_tag() {
         let input = "plain İ text with no blocks";
         assert_eq!(remove_blocks(input, "script"), input);
+    }
+
+    #[test]
+    fn decodes_named_entities() {
+        assert_eq!(
+            decode_entities("&amp; &lt; &gt; &quot; &apos; &nbsp; &mdash; &ndash; &hellip; &rsquo; &lsquo; &rdquo; &ldquo; &copy; &reg;"),
+            "& < > \" ' \u{00a0} — – … ’ ‘ ” “ © ®"
+        );
+    }
+
+    #[test]
+    fn decodes_decimal_numeric_entities() {
+        assert_eq!(decode_entities("&#39;&#169;"), "'©");
+    }
+
+    #[test]
+    fn decodes_hex_numeric_entities() {
+        assert_eq!(decode_entities("&#x27;&#X1F642;"), "'🙂");
+    }
+
+    #[test]
+    fn leaves_unknown_entities_unchanged() {
+        assert_eq!(
+            decode_entities("keep &unknown; intact"),
+            "keep &unknown; intact"
+        );
+    }
+
+    #[test]
+    fn decodes_double_encoded_entities_once() {
+        assert_eq!(decode_entities("&amp;lt;"), "&lt;");
     }
 }

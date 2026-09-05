@@ -67,7 +67,8 @@ stream-concatenated into one video (see [Long-form YouTube mode](#long-form-yout
 - An OpenRouter API key with a little credit.
 - *(Optional, for exact captions)* [whisper-timestamped](https://github.com/linto-ai/whisper-timestamped)
   on your PATH for real word-level timing (installed via [`uv`](https://docs.astral.sh/uv/) —
-  see below). Without it, the tool falls back to estimating word timings from the audio length.
+  see below). Without it, the tool falls back to estimating word timings from the audio length,
+  including natural pauses at punctuation.
 
 ## Supported platforms
 
@@ -196,8 +197,8 @@ verbatim as the narration. (You can also do the brief inline with `--topic "$(ca
 
 Output lands in a timestamped folder `out/<YYYYMMDD_HHMMSS>_<title-slug>/` (e.g.
 `out/20260618_092729_the-sheepdog-and-the-duck/`):
-`reel.mp4`, `poster.jpg`, `reel.ass`, `audio.mp3`, `scene-NN.jpg`, `scene-NN.mp4` (video clips),
-`script.json`, `words.json`. A `--format youtube` run is 1920×1080 and adds `youtube.md` (pastable
+`reel.mp4`, `poster.jpg`, `reel.ass`, `captions.srt`, `metadata.md`, `audio.mp3`, `scene-NN.jpg`,
+`scene-NN.mp4` (video clips), `script.json`, `words.json`. A `--format youtube` run is 1920×1080 and adds `youtube.md` (pastable
 metadata) plus per-chapter `segment-NN.mp4` intermediates (and `chapter-NN.mp3` if the single TTS
 call had to fall back to per-chapter synthesis) — see [Long-form YouTube mode](#long-form-youtube-mode).
 
@@ -212,6 +213,9 @@ conditioned on the character reference so it matches the reel's cast. It's also 
 `--from` resume an existing `poster.jpg` is reused (re-stitch stays free); if generation ever
 fails it falls back to a frame of the reel (`--poster-scene N` picks which scene).
 
+Final audio is normalized in a single pass toward −14 LUFS for social-platform delivery; use
+`--no-loudnorm` to retain the original mix level.
+
 ### Flags
 
 | Flag | Default | Purpose |
@@ -219,6 +223,8 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--topic` / `--brief` / `--script` / `--url` | — | Input mode (exactly one). `--brief <file>` = AI writes from your notes; `--script <file>` = verbatim narration. |
 | `--from <dir>` | — | Resume a prior run folder: reuse its script/audio/captions/images and just re-render (e.g. add `--video`). |
 | `--out <dir>` | `out` | Output root directory. |
+| `--dry-run` | off | Print an itemized, upper-bound cost estimate and exit before any paid API call. On a `--from` resume the estimate covers only what's missing from the run folder (stills, clips, a requested soundtrack). |
+| `--max-cost <USD>` | — | Abort before paid API calls when the projected upper-bound estimate exceeds this USD amount. Also available as `REELMAESTRO_MAX_COST`. |
 | `--voice <name>` | auto | TTS voice (model-dependent). If unset, auto-picked from the script's narrator gender (male → `Puck`, female/neutral → `Kore`). |
 | `--speed <f64>` | `1.0` | Narration tempo (0.5–2.0), pitch-preserving. |
 | `--music-gen` | off | AI-generate a background soundtrack (OpenRouter music model, ~$0.08). |
@@ -227,7 +233,7 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--music-volume <f64>` | `0.6` | Background music gain. Higher = louder; raise toward `1.0`+ for a stronger bed. |
 | `--video` | off | Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video model/resolution (default Veo 3.1 Lite ≈ $0.05/sec at 720p). |
 | `--video-scenes <N>` | — | Render only the first N scenes as video; the rest stay Ken Burns stills (caps cost). |
-| `--video-resolution <res>` | tier (`720p`) | Veo clip resolution (`720p`/`1080p`). Defaults from the quality tier (`1080p` on `premium`). |
+| `--video-resolution <res>` | tier (`720p`) | Video clip resolution: `720p` or `1080p` (case-insensitive; invalid values fail before generation). Defaults from the quality tier (`1080p` on `premium`). |
 | `--quality <draft\|standard\|premium>` | `standard` | Quality/cost tier presetting the model defaults: `draft` = cheapest models + validation off (~3-5x cheaper); `premium` = Opus script, Veo 3.1 Fast 1080p, deepest validation. Explicit model flags/envs still override. |
 | `--format <reel\|youtube>` | `reel` | Output format. `youtube` = landscape 16:9 long-form with a chaptered script, per-chapter TTS + rendering, a 1280x720 thumbnail, and a `youtube.md` metadata file (title/description/tags/chapter timestamps). |
 | `--minutes <N>` | `3` | Target length in minutes for `--format youtube` (1-12). Drives the narration word budget, scene count, and chapter count (~1/min). |
@@ -237,16 +243,27 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 | `--poster-scene <N>` | `0` | Fallback only: which scene's frame to use if custom poster generation fails (0 = hook). |
 | `--no-embed-poster` | off | Write `poster.jpg` but don't embed it as the MP4's cover art. |
 | `--no-captions` | off | Don't burn captions into the video. |
+| `--caption-style <burst\|karaoke\|boxed\|minimal>` | `burst` | Caption look. `karaoke` highlights words as they are spoken; `boxed` adds an opaque dark backing; `minimal` is a smaller lower-third style. |
+| `--caption-font <NAME>` | `DejaVu Sans` | Installed font family for captions. |
+| `--no-loudnorm` | off | Keep the final audio mix unnormalized instead of targeting −14 LUFS. |
 | `--no-dissolve` | off | Force hard cuts between every scene (disable cross-dissolves). |
 | `--dissolve-seconds <f64>` | `0.5` | Cross-dissolve length for scriptwriter-flagged still→still transitions. |
 | `--no-grade` | off | Disable the unified cinematic colour grade / film grain + cross-scene exposure match. |
-| `--validate-scene <off\|2\|3>` | tier (`2`) | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` / `3` = up to that many candidates at up to N× image cost. Defaults from the quality tier (off on `draft`, 3 on `premium`). |
+| `--validate-scene <off\|2\|3>` | tier (`2`) | Per-scene consistency validation: generate candidates and keep the most consistent (vision-judged), re-rolling drifting frames. `off` = one candidate, no judging; `2` / `3` = at most that many candidates, for at most N× image cost. Defaults from the quality tier (off on `draft`, 3 on `premium`). |
 | `--no-narration` | off | No spoken voiceover — produce a silent or music-only video. |
 | `--scene-seconds <f64>` | `4.0` | Per-scene length used when `--no-narration` is set (no audio to time against). |
-| `--no-images` | off | Stop right after writing word timings (script + TTS + timing only). Cheap way to test caption timing. |
+| `--no-images` | off | Fresh-run caption-timing test: stop right after writing word timings (script + TTS + timing only). Cannot be combined with `--from`. |
 | `--whisper-cmd <cmd>` | `whisper_timestamped` | Local command that emits word-level timestamps. |
 | `--whisper-model <name>` | `base` | Whisper model for local timing (`base`, `small`, `large-v3`, …). |
 | `--text-model` / `--image-model` / `--tts-model` / `--music-model` / `--judge-model` | see `.env.example` | Per-stage OpenRouter model overrides (the judge is the multimodal model scoring scene consistency). |
+
+### Caption styles
+
+`--caption-style burst` preserves the original large word-burst treatment. Choose `karaoke` to
+sweep a yellow highlight across each word as it is spoken (ASS `\kf` karaoke timing from the
+word timings), `boxed` for white text on an opaque dark box, or
+`minimal` for smaller, thinner-outlined captions placed lower on the frame. Use
+`--caption-font "Font Family"` when that font is installed where ffmpeg runs.
 
 ## Long-form YouTube mode
 
@@ -272,8 +289,8 @@ reelmaestro --topic "the history of espresso" --format youtube --minutes 5
   are stream-copy concatenated and the narration/music mix is muxed once. Dozens of scenes never
   sit in one giant ffmpeg filtergraph.
 - **Outputs** — a 1920x1080 `reel.mp4` (or `reel-video.mp4`), a 1280x720 `poster.jpg` thumbnail,
-  and `youtube.md` with the title, description, tags, and `0:00`-style chapter timestamps ready
-  to paste into a YouTube upload.
+  `captions.srt` sidecar for upload, and `youtube.md` with the title, description, tags, and
+  `0:00`-style chapter timestamps ready to paste into a YouTube upload.
 - **Video model** — the default becomes `alibaba/wan-2.6` (~$0.04/s, clips up to 15s, so long
   scene windows aren't slow-motion-stretched like 8s-capped Veo clips). Wan is newer to this
   pipeline than Veo; switch back per run with `--video-model google/veo-3.1-lite`. Cost scales
@@ -393,11 +410,16 @@ reelmaestro --from out/20260618_141530_a-fox-and-a-hare-become-friends/ --video
 ```
 
 `--from <dir>` reuses the folder's `script.json`, `audio.mp3`, `words.json`, `scene-NN.jpg`,
-and any soundtrack, so the video matches the preview you approved. A still re-render (no `--video`)
+and any soundtrack, so the video matches the preview you approved. A missing still is regenerated
+on resume (only that scene is billed), so delete a bad `scene-NN.jpg` and re-run `--from …` to redo
+just that scene. A still re-render (no `--video`)
 writes `reel.mp4`; the **video upgrade writes `reel-video.mp4`**, leaving the still `reel.mp4` intact
 so you keep both versions. You can also use `--from` to just re-stitch (e.g. after tweaking a scene
-image by hand), or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no `--video`
-does a pure local re-assemble (no API calls).
+image by hand), or add a soundtrack later with `--from <dir> --music-gen`. Resuming with no
+`--video` does a pure local re-assemble when every still exists (no API calls). If a narrated run's
+`words.json` is missing, resume
+re-derives it locally from `audio.mp3`; an unreadable or invalid `words.json` stops with an error
+instead of rendering without captions.
 
 ## Video scenes (optional, costs real money)
 
@@ -419,6 +441,8 @@ reelmaestro --topic "..." --video --video-resolution 1080p --video-model google/
 - Cost scales with total video seconds. Each scene is billed at its clip length, clamped to
   Veo's 4–8s range. Reel Maestro prints an estimate before generating, e.g.
   `→ generating 2 video scene(s) (google/veo-3.1-lite, ~12s ≈ $0.60) ...`.
+- An unrecognized `--video-model` is estimated conservatively at $0.40/sec and the printed
+  estimate is explicitly marked as a guess.
 - Generation is **non-fatal per scene**: if a clip fails (or the job times out), that scene
   falls back to its Ken Burns still — one bad/expensive clip never kills the run.
 - **Clips are reused, so you can regenerate just one scene.** A scene's clip is saved as
@@ -511,9 +535,10 @@ cargo run -- --url "https://en.wikipedia.org/wiki/Tardigrade"
 Then inspect `out/<slug>/`:
 
 - `words.json` — the word timings used for captions. Entries with gaps between one word's
-  `end_s` and the next word's `start_s` are real timestamps from `whisper_timestamped`;
-  perfectly contiguous spans mean it fell back to the duration estimate (tool not installed
-  or it errored — check the `note:` lines in the run output).
+  `end_s` and the next word's `start_s` are real timestamps from `whisper_timestamped` or
+  punctuation-aware pauses from the duration estimate. Perfectly contiguous spans mean the
+  estimator found no intervening punctuation (tool not installed or it errored — check the
+  `note:` lines in the run output).
 - `reel.mp4` — `ffprobe out/<slug>/reel.mp4` should show 1080×1920 H.264+AAC with duration
   ≈ your audio. Play it to check caption sync and that images match the scenes.
 - `script.json` / `scene-NN.jpg` — inspect what the models produced. A broken `scene-*.jpg`
@@ -528,8 +553,9 @@ path, any Layer 3 failure points at a specific stage: estimated (contiguous) `wo
 `whisper_timestamped` missing/failing, a placeholder `scene-*.jpg` ⇒ image-gen, a script
 error ⇒ the text model.
 
-> Tip: `--no-images` runs only script + TTS + word timing and stops, so you can check
-> caption timing for a couple of cents without paying for images.
+> Tip: on a fresh run, `--no-images` runs only script + TTS + word timing and stops, so you can
+> check caption timing for a couple of cents without paying for images. It cannot be combined with
+> `--from`.
 
 ## AI invocations at a glance
 

@@ -6,10 +6,23 @@
 
 use crate::config::Format;
 use crate::model::WordTiming;
+use clap::ValueEnum;
 
 const MAX_WORDS_PER_CARD: usize = 3; // keep cards short enough to read at a glance
 const MAX_GAP_S: f64 = 0.2; // start a new card when the silence between words exceeds this
-const FONT: &str = "DejaVu Sans"; // ships with the ffmpeg/libass image used to render
+
+/// The visual treatment applied to word-timed captions.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CaptionPreset {
+    /// The original large, white word-burst captions.
+    Burst,
+    /// White captions that sweep yellow across each word as it is spoken.
+    Karaoke,
+    /// White captions on an opaque dark box.
+    Boxed,
+    /// A smaller, cleaner lower-third caption treatment.
+    Minimal,
+}
 
 /// The format-dependent knobs of the caption look: the ASS PlayRes canvas the sizes are
 /// expressed in, the font size, and the bottom/side margins.
@@ -19,6 +32,8 @@ pub struct CaptionStyle {
     pub font_size: u32,
     pub margin_v: u32,
     pub margin_lr: u32,
+    pub preset: CaptionPreset,
+    pub font: String,
 }
 
 impl CaptionStyle {
@@ -33,6 +48,8 @@ impl CaptionStyle {
                 font_size: 96,
                 margin_v: 520,
                 margin_lr: 80,
+                preset: CaptionPreset::Burst,
+                font: "DejaVu Sans".to_string(),
             },
             Format::Youtube => CaptionStyle {
                 play_res_x: 1920,
@@ -40,8 +57,32 @@ impl CaptionStyle {
                 font_size: 64,
                 margin_v: 100,
                 margin_lr: 80,
+                preset: CaptionPreset::Burst,
+                font: "DejaVu Sans".to_string(),
             },
         }
+    }
+
+    /// The caption look for an output format, preset, and optional installed font name.
+    pub fn for_format_and_preset(f: Format, preset: CaptionPreset, font: Option<&str>) -> Self {
+        let mut style = Self::for_format(f);
+        style.preset = preset;
+        if let Some(font) = font {
+            style.font = font.to_string();
+        }
+        if preset == CaptionPreset::Minimal {
+            match f {
+                Format::Reel => {
+                    style.font_size = 72;
+                    style.margin_v = 240;
+                }
+                Format::Youtube => {
+                    style.font_size = 48;
+                    style.margin_v = 55;
+                }
+            }
+        }
+        style
     }
 }
 
@@ -54,8 +95,23 @@ pub fn build_ass(words: &[WordTiming], style: &CaptionStyle) -> String {
     let mut s = String::new();
     s.push_str(&header(style));
     for card in pack_cards(words) {
-        s.push_str(&dialogue(&card));
+        s.push_str(&dialogue(&card, style));
         s.push('\n');
+    }
+    s
+}
+
+/// Build an upload-ready SRT sidecar using the same short caption cards as the burned-in ASS.
+pub fn build_srt(words: &[WordTiming]) -> String {
+    let mut s = String::new();
+    for (index, card) in pack_cards(words).iter().enumerate() {
+        s.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            index + 1,
+            srt_time(card.start_s),
+            srt_time(card.end_s),
+            card.text
+        ));
     }
     s
 }
@@ -76,11 +132,12 @@ pub fn rebase(words: &[WordTiming], start_s: f64, end_s: f64) -> Vec<WordTiming>
         .collect()
 }
 
-/// One on-screen caption "burst": the text to show and the wall-clock window it's visible for.
+/// One on-screen caption "burst": the text and word timings within its wall-clock window.
 /// `start_s`/`end_s` come straight from the first/last word's timings so captions stay locked to
 /// the spoken audio.
 struct Card {
     text: String,
+    words: Vec<WordTiming>,
     start_s: f64,
     end_s: f64,
 }
@@ -105,6 +162,7 @@ fn pack_cards(words: &[WordTiming]) -> Vec<Card> {
             .join(" ");
         cards.push(Card {
             text: text.to_uppercase(),
+            words: cur.iter().map(|w| (*w).clone()).collect(),
             start_s: cur.first().unwrap().start_s,
             end_s: cur.last().unwrap().end_s,
         });
@@ -133,11 +191,44 @@ fn pack_cards(words: &[WordTiming]) -> Vec<Card> {
 
 /// The ASS header: declares the style's PlayRes canvas and a single `Burst` style.
 ///
-/// The `Style:` line encodes the caption look (libass field order, see the `Format:` line above
-/// it): white fill + black outline (ASS colours are `&HAABBGGRR`), Bold (-1), 6px outline with no
-/// shadow, Alignment 2 (bottom-centre), and the style's `MarginV` to lift the text off the very
-/// bottom edge (on the vertical canvas, well above phone UI / safe areas).
+/// The burst branch deliberately preserves the original header byte-for-byte. Other presets use
+/// the same layout while changing only their visual style fields.
 fn header(style: &CaptionStyle) -> String {
+    let (format, style_line) = match style.preset {
+        CaptionPreset::Burst => (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            format!(
+                "Style: Burst,{},{},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,{},{},{},1",
+                style.font, style.font_size, style.margin_lr, style.margin_lr, style.margin_v
+            ),
+        ),
+        // Karaoke: libass draws the not-yet-sung part of a `\kf` word in SecondaryColour and
+        // sweeps PrimaryColour across it as its duration elapses — so Primary is the yellow
+        // highlight and Secondary the resting white.
+        CaptionPreset::Karaoke => (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            format!(
+                "Style: Burst,{},{},&H0000FFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,{},{},{},1",
+                style.font, style.font_size, style.margin_lr, style.margin_lr, style.margin_v
+            ),
+        ),
+        // Boxed: BorderStyle 3 draws an opaque box in OutlineColour behind the text; the Outline
+        // width becomes the box padding, so keep it non-zero.
+        CaptionPreset::Boxed => (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            format!(
+                "Style: Burst,{},{},&H00FFFFFF,&H00181818,&H00181818,-1,0,0,0,100,100,0,0,3,12,0,2,{},{},{},1",
+                style.font, style.font_size, style.margin_lr, style.margin_lr, style.margin_v
+            ),
+        ),
+        CaptionPreset::Minimal => (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            format!(
+                "Style: Burst,{},{},&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,{},{},{},1",
+                style.font, style.font_size, style.margin_lr, style.margin_lr, style.margin_v
+            ),
+        ),
+    };
     format!(
         "[Script Info]\n\
          ScriptType: v4.00+\n\
@@ -145,28 +236,48 @@ fn header(style: &CaptionStyle) -> String {
          PlayResY: {}\n\
          WrapStyle: 0\n\n\
          [V4+ Styles]\n\
-         Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-         Style: Burst,{FONT},{},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,{},{},{},1\n\n\
+         {format}\n\
+         {style_line}\n\n\
          [Events]\n\
          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
-        style.play_res_x,
-        style.play_res_y,
-        style.font_size,
-        style.margin_lr,
-        style.margin_lr,
-        style.margin_v,
+        style.play_res_x, style.play_res_y,
     )
 }
 
 /// Render one card as an ASS `Dialogue:` event on layer 0 using the `Burst` style. The middle
 /// zero fields are per-event margin overrides (0 = inherit the style's margins).
-fn dialogue(card: &Card) -> String {
+fn dialogue(card: &Card, style: &CaptionStyle) -> String {
+    let text = if style.preset == CaptionPreset::Karaoke {
+        karaoke_text(card)
+    } else {
+        card.text.clone()
+    };
     format!(
         "Dialogue: 0,{},{},Burst,,0,0,0,,{}",
         ass_time(card.start_s),
         ass_time(card.end_s),
-        card.text
+        text
     )
+}
+
+/// ASS karaoke text with one `\kf` (sweep-fill) duration tag per word, in centiseconds. Each
+/// word's tag runs from its own start until the NEXT word starts (the last until the card ends),
+/// so the sweeps tile the card with no dead time at the short intra-card gaps; at least 1 cs.
+fn karaoke_text(card: &Card) -> String {
+    card.words
+        .iter()
+        .enumerate()
+        .map(|(i, word)| {
+            let next_start = card
+                .words
+                .get(i + 1)
+                .map(|w| w.start_s)
+                .unwrap_or(card.end_s);
+            let duration_cs = ((next_start - word.start_s) * 100.0).round().max(1.0) as u64;
+            format!("{{\\kf{duration_cs}}}{}", word.word.to_uppercase())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Format seconds as ASS time `H:MM:SS.cc` (centiseconds).
@@ -179,6 +290,17 @@ fn ass_time(t: f64) -> String {
     let m = (total_s / 60) % 60;
     let h = total_s / 3600;
     format!("{h}:{m:02}:{s:02}.{cs:02}")
+}
+
+/// Format seconds as SRT time `HH:MM:SS,mmm` (milliseconds).
+fn srt_time(t: f64) -> String {
+    let total_ms = (t.max(0.0) * 1000.0).round() as u64;
+    let ms = total_ms % 1000;
+    let total_s = total_ms / 1000;
+    let s = total_s % 60;
+    let m = (total_s / 60) % 60;
+    let h = total_s / 3600;
+    format!("{h:02}:{m:02}:{s:02},{ms:03}")
 }
 
 #[cfg(test)]
@@ -259,5 +381,76 @@ mod tests {
         assert!((out[0].end_s - 0.5).abs() < 1e-9);
         assert_eq!(out[1].word, "straddle");
         assert!((out[1].start_s - 9.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn default_preset_keeps_original_style_line() {
+        let style = CaptionStyle::for_format(Format::Reel);
+        let ass = build_ass(&[], &style);
+        assert!(ass.contains("Style: Burst,DejaVu Sans,96,"));
+    }
+
+    #[test]
+    fn karaoke_tags_sum_to_card_duration() {
+        let cards = pack_cards(&[
+            w("one", 0.0, 0.33),
+            w("two", 0.33, 0.67),
+            w("three", 0.67, 1.0),
+        ]);
+        let text = karaoke_text(&cards[0]);
+        assert_eq!(text, "{\\kf33}ONE {\\kf34}TWO {\\kf33}THREE");
+        let duration_sum: u64 = [33, 34, 33].into_iter().sum();
+        let card_duration = ((cards[0].end_s - cards[0].start_s) * 100.0).round() as i64;
+        assert!((duration_sum as i64 - card_duration).abs() <= 1);
+    }
+
+    #[test]
+    fn karaoke_tags_absorb_intra_card_gaps() {
+        // A 0.1 s gap (below MAX_GAP_S) stays inside the card; the preceding word's sweep runs
+        // through it so the highlight never goes dark mid-card.
+        let cards = pack_cards(&[w("one", 0.0, 0.4), w("two", 0.5, 1.0)]);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(karaoke_text(&cards[0]), "{\\kf50}ONE {\\kf50}TWO");
+    }
+
+    #[test]
+    fn karaoke_style_highlights_in_yellow_over_white() {
+        let style = CaptionStyle::for_format_and_preset(Format::Reel, CaptionPreset::Karaoke, None);
+        let ass = build_ass(&[], &style);
+        assert!(ass.contains("PrimaryColour, SecondaryColour,"));
+        assert!(ass.contains("Style: Burst,DejaVu Sans,96,&H0000FFFF,&H00FFFFFF,"));
+    }
+
+    #[test]
+    fn boxed_preset_uses_opaque_box_border_style() {
+        let style = CaptionStyle::for_format_and_preset(Format::Reel, CaptionPreset::Boxed, None);
+        let ass = build_ass(&[], &style);
+        assert!(ass.contains("&H00181818,&H00181818,-1,0,0,0,100,100,0,0,3,12,0,2,"));
+    }
+
+    #[test]
+    fn font_override_appears_in_style_line() {
+        let style =
+            CaptionStyle::for_format_and_preset(Format::Reel, CaptionPreset::Burst, Some("Impact"));
+        let ass = build_ass(&[], &style);
+        assert!(ass.contains("Style: Burst,Impact,96,"));
+    }
+
+    #[test]
+    fn srt_time_formats_milliseconds() {
+        assert_eq!(srt_time(0.0), "00:00:00,000");
+        assert_eq!(srt_time(75.5), "00:01:15,500");
+        assert_eq!(srt_time(3661.234), "01:01:01,234");
+    }
+
+    #[test]
+    fn build_srt_uses_indices_and_blank_lines() {
+        let srt = build_srt(&[w("hello", 0.0, 0.5), w("world", 0.5, 1.0)]);
+        assert_eq!(srt, "1\n00:00:00,000 --> 00:00:01,000\nHELLO WORLD\n\n");
+    }
+
+    #[test]
+    fn build_srt_is_empty_without_words() {
+        assert!(build_srt(&[]).is_empty());
     }
 }

@@ -32,8 +32,9 @@ use crate::model::WordTiming;
 /// Word timings plus a `coverage` score in `[0, 1]`: the fraction of the narration that whisper
 /// actually transcribed (raw whisper tokens ÷ narration words, capped at 1). A low value means the
 /// audio was truncated — far fewer words were spoken than the script has — which the caller uses to
-/// re-synthesize. When whisper is unavailable and timings are estimated, coverage is 1.0 (the
-/// estimate spans the whole audio, so there's no truncation signal to act on).
+/// re-synthesize. When whisper is unavailable and timings are estimated, coverage compares the
+/// audio duration with the expected duration at [`crate::config::WORDS_PER_MINUTE`], adjusted for
+/// the requested TTS speed.
 pub struct Timings {
     pub words: Vec<WordTiming>,
     pub coverage: f64,
@@ -44,6 +45,7 @@ pub fn word_timings(
     audio: &Path,
     narration: &str,
     debug_out: &Path,
+    speed: f64,
 ) -> Result<Timings> {
     let narr_words = narration.split_whitespace().count().max(1);
     // 1. Real timings from local whisper-timestamped, re-texted to the narration script so
@@ -60,14 +62,22 @@ pub fn word_timings(
                 "  note: {} produced no word timings; estimating instead",
                 cfg.whisper_cmd
             );
-            (estimate_from_audio(audio, narration)?, 1.0)
+            let duration_s = ffmpeg::duration_s(audio)?;
+            (
+                estimate_from_duration(narration, duration_s),
+                estimated_coverage(duration_s, narr_words, speed),
+            )
         }
         Err(e) => {
             eprintln!(
                 "  note: local word timing via `{}` unavailable ({e}); estimating instead",
                 cfg.whisper_cmd
             );
-            (estimate_from_audio(audio, narration)?, 1.0)
+            let duration_s = ffmpeg::duration_s(audio)?;
+            (
+                estimate_from_duration(narration, duration_s),
+                estimated_coverage(duration_s, narr_words, speed),
+            )
         }
     };
 
@@ -75,10 +85,25 @@ pub fn word_timings(
     Ok(Timings { words, coverage })
 }
 
-fn estimate_from_audio(audio: &Path, narration: &str) -> Result<Vec<WordTiming>> {
-    let dur = ffmpeg::duration_s(audio)?;
-    eprintln!("  note: estimating word timings from audio length ({dur:.1}s)");
-    Ok(estimate(narration, dur))
+fn estimate_from_duration(narration: &str, duration_s: f64) -> Vec<WordTiming> {
+    eprintln!("  note: estimating word timings from audio length ({duration_s:.1}s)");
+    estimate(narration, duration_s)
+}
+
+/// Natural TTS voices run up to ~15% faster than the script-budget pace of
+/// [`crate::config::WORDS_PER_MINUTE`]. The duration-based estimate assumes that faster pace so a
+/// merely brisk (untruncated) take is not mistaken for a truncated one and re-synthesized at cost.
+/// A genuinely truncated take (≲75% of the words spoken) still lands well below
+/// `MIN_TTS_COVERAGE` in `main.rs`.
+const ESTIMATE_PACE_TOLERANCE: f64 = 1.15;
+
+/// Estimate how much narration is present from duration when word-level ASR is unavailable.
+/// The expected duration uses the script-budget pace (times [`ESTIMATE_PACE_TOLERANCE`]) and is
+/// adjusted for the pitch-preserving TTS tempo multiplier.
+fn estimated_coverage(audio_seconds: f64, word_count: usize, speed: f64) -> f64 {
+    let pace = crate::config::WORDS_PER_MINUTE * ESTIMATE_PACE_TOLERANCE;
+    let expected_seconds = word_count as f64 * 60.0 / pace / speed;
+    (audio_seconds / expected_seconds).min(1.0)
 }
 
 /// Re-text whisper's timed tokens with the authoritative narration words. We align the two
@@ -293,18 +318,41 @@ fn words_from_whisper_json(v: &Value) -> Vec<WordTiming> {
 }
 
 /// Distribute `total` seconds across the words of `text`, weighting each word by its
-/// syllable count so longer words get proportionally more screen time. Deterministic.
+/// syllable count so longer words get proportionally more screen time. Punctuation adds silence
+/// between words, letting captions and scene cuts reflect natural speech pauses. Deterministic.
 fn estimate(text: &str, total: f64) -> Vec<WordTiming> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return Vec::new();
     }
-    let weights: Vec<f64> = words.iter().map(|w| syllables(w) as f64).collect();
-    let sum: f64 = weights.iter().sum();
+
+    let mut search_start = 0;
+    let word_ends: Vec<usize> = words
+        .iter()
+        .map(|word| {
+            let start = text[search_start..]
+                .find(word)
+                .expect("split_whitespace word must occur in source text")
+                + search_start;
+            search_start = start + word.len();
+            search_start
+        })
+        .collect();
+    let word_weights: Vec<f64> = words.iter().map(|w| syllables(w) as f64).collect();
+    let pause_weights: Vec<f64> = words
+        .iter()
+        .enumerate()
+        .take(words.len() - 1)
+        .map(|(index, word)| {
+            let between = &text[word_ends[index]..word_ends[index + 1] - words[index + 1].len()];
+            pause_weight(word, has_paragraph_break(between))
+        })
+        .collect();
+    let sum: f64 = word_weights.iter().chain(&pause_weights).sum();
 
     let mut out = Vec::with_capacity(words.len());
     let mut t = 0.0;
-    for (w, weight) in words.iter().zip(&weights) {
+    for (index, (w, weight)) in words.iter().zip(&word_weights).enumerate() {
         let dur = total * weight / sum;
         out.push(WordTiming {
             word: w.to_string(),
@@ -312,8 +360,34 @@ fn estimate(text: &str, total: f64) -> Vec<WordTiming> {
             end_s: t + dur,
         });
         t += dur;
+        if let Some(pause_weight) = pause_weights.get(index) {
+            t += total * pause_weight / sum;
+        }
     }
     out
+}
+
+fn has_paragraph_break(between: &str) -> bool {
+    between.bytes().filter(|&byte| byte == b'\n').count() >= 2
+}
+
+/// Silence weights are expressed in syllable-equivalents, so their length scales naturally with
+/// the supplied audio duration. A paragraph break overrides, rather than stacks with, punctuation.
+fn pause_weight(word: &str, paragraph_break: bool) -> f64 {
+    if paragraph_break {
+        return 3.5;
+    }
+
+    let trimmed = word.trim_end_matches(['"', '\'', ')', ']', '}', '”', '’']);
+    if matches!(trimmed.chars().last(), Some('.' | '!' | '?')) {
+        2.5
+    } else if matches!(trimmed.chars().last(), Some(',' | ';' | ':' | '—'))
+        || trimmed.ends_with("--")
+    {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 /// Rough syllable count: number of vowel groups, at least 1.
@@ -344,6 +418,21 @@ mod tests {
             assert!(pair[1].start_s >= pair[0].start_s);
             assert!((pair[0].end_s - pair[1].start_s).abs() < 1e-9); // contiguous
         }
+    }
+
+    #[test]
+    fn estimated_coverage_tracks_audio_duration() {
+        // 145 words at the (tolerance-adjusted) pace take 60 s / 1.15 ≈ 52.2 s.
+        let words = 145;
+        let expected_seconds = 60.0 / super::ESTIMATE_PACE_TOLERANCE;
+        assert!((estimated_coverage(expected_seconds, words, 1.0) - 1.0).abs() < 1e-9);
+        assert!((estimated_coverage(expected_seconds / 2.0, words, 1.0) - 0.5).abs() < 1e-9);
+        // A brisk but complete take at the nominal 145 wpm (60 s) still reads as full coverage.
+        assert!((estimated_coverage(60.0, words, 1.0) - 1.0).abs() < 1e-9);
+        // --speed 2.0 halves the expected duration.
+        assert!((estimated_coverage(expected_seconds / 2.0, words, 2.0) - 1.0).abs() < 1e-9);
+        // A take with only ~70% of the words spoken is flagged (below the 0.85 floor in main.rs).
+        assert!(estimated_coverage(60.0 * 0.7, words, 1.0) < 0.85);
     }
 
     #[test]
@@ -472,5 +561,41 @@ mod tests {
         let out = align_text_to_timings("fifty times", &timed);
         assert_eq!(out[0].word, "fifty");
         assert!((out[0].start_s - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_sentence_end_pause_breaks_caption_cards() {
+        let words = estimate("Hello. Again", 6.0);
+        assert!(words[1].start_s - words[0].end_s > 0.2);
+    }
+
+    #[test]
+    fn estimate_comma_pause_is_shorter_than_period_pause() {
+        let comma = estimate("Hello, again", 6.0);
+        let period = estimate("Hello. Again", 6.0);
+        let comma_gap = comma[1].start_s - comma[0].end_s;
+        let period_gap = period[1].start_s - period[0].end_s;
+        assert!(comma_gap > 0.0);
+        assert!(comma_gap < period_gap);
+    }
+
+    #[test]
+    fn estimate_with_pauses_is_monotonic_and_preserves_total_duration() {
+        let words = estimate("First sentence.\n\nSecond, sentence!", 9.0);
+        assert!((words[0].start_s - 0.0).abs() < 1e-9);
+        assert!((words.last().unwrap().end_s - 9.0).abs() < 1e-9);
+        for pair in words.windows(2) {
+            assert!(pair[0].end_s <= pair[1].start_s);
+        }
+    }
+
+    #[test]
+    fn estimate_without_punctuation_preserves_syllable_proportions() {
+        let words = estimate("a summer beach", 8.0);
+        let durations: Vec<f64> = words.iter().map(|word| word.end_s - word.start_s).collect();
+        assert!((durations[1] / durations[0] - 2.0).abs() < 1e-9);
+        assert!((durations[2] / durations[0] - 1.0).abs() < 1e-9);
+        assert!((words[0].end_s - words[1].start_s).abs() < 1e-9);
+        assert!((words[1].end_s - words[2].start_s).abs() < 1e-9);
     }
 }

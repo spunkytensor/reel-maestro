@@ -16,6 +16,9 @@ use crate::openrouter::{self, OpenRouter};
 /// running up cost) while still overlapping the slow video generations.
 const MAX_CONCURRENT: usize = 4;
 
+/// Veo 3.1 accepts at most three image ingredients per video request.
+const MAX_REFERENCE_IMAGES: usize = 3;
+
 /// Recurring Veo failure modes worth suppressing on every clip. Sent through OpenRouter's
 /// provider passthrough (Veo has no top-level negative-prompt field); the submit falls back to
 /// omitting it if the provider rejects the passthrough.
@@ -178,17 +181,33 @@ fn build_video_prompt(scene: &Scene, characters: &[Entity], locations: &[Entity]
     prompt
 }
 
-/// Data URLs of the saved reference portraits for this scene's cast (front view per character,
-/// in cast order), for use as Veo "ingredients". Missing files are skipped silently — a
-/// no-consistency run has none, and the fallback then simply goes unanchored as before.
+/// Data URLs of the saved reference portraits for use as Veo "ingredients". The pinned primary
+/// photo comes first, followed by this scene's cast portraits in cast order. Missing and duplicate
+/// files are skipped silently — a no-consistency run has none, and the fallback then simply goes
+/// unanchored as before.
 fn character_reference_urls(scene: &Scene, dir: &Path) -> Vec<String> {
-    scene
-        .cast_ids
+    let mut references = Vec::with_capacity(MAX_REFERENCE_IMAGES);
+    let paths = std::iter::once(dir.join("character-ref.jpg")).chain(
+        scene
+            .cast_ids
+            .iter()
+            .map(|id| dir.join(format!("character-{}.jpg", images::slug(id)))),
+    );
+
+    for path in paths {
+        if let Ok(bytes) = std::fs::read(path) {
+            if !references.contains(&bytes) {
+                references.push(bytes);
+            }
+            if references.len() == MAX_REFERENCE_IMAGES {
+                break;
+            }
+        }
+    }
+
+    references
         .iter()
-        .filter_map(|id| {
-            std::fs::read(dir.join(format!("character-{}.jpg", images::slug(id)))).ok()
-        })
-        .map(|b| openrouter::data_url_from_image(&b))
+        .map(|bytes| openrouter::data_url_from_image(bytes))
         .collect()
 }
 
@@ -241,8 +260,9 @@ fn snap_duration(model: &str, d: f64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_video_prompt, snap_duration};
+    use super::{build_video_prompt, character_reference_urls, snap_duration};
     use crate::model::{Entity, Scene};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scene(json: &str) -> Scene {
         serde_json::from_str(json).unwrap()
@@ -325,5 +345,44 @@ mod tests {
         assert!(!p.contains("People in this shot"));
         assert!(!p.contains("Setting, keep EXACTLY"));
         assert!(!p.contains("plays under the narration"));
+    }
+
+    #[test]
+    fn character_references_prioritize_pinned_photo_and_deduplicate() {
+        let dir = std::env::temp_dir().join(format!(
+            "reelmaestro_video_references_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("character-ref.jpg"), b"pinned").unwrap();
+        std::fs::write(dir.join("character-primary.jpg"), b"pinned").unwrap();
+        std::fs::write(dir.join("character-secondary.jpg"), b"secondary").unwrap();
+        std::fs::write(dir.join("character-third.jpg"), b"third").unwrap();
+        std::fs::write(dir.join("character-fourth.jpg"), b"fourth").unwrap();
+
+        let s = scene(
+            r#"{"line":"","image_prompt":"","cast_ids":["primary","secondary","third","fourth"]}"#,
+        );
+        let references = character_reference_urls(&s, &dir);
+
+        assert_eq!(references.len(), 3);
+        assert_eq!(
+            references[0],
+            crate::openrouter::data_url_from_image(b"pinned")
+        );
+        assert_eq!(
+            references[1],
+            crate::openrouter::data_url_from_image(b"secondary")
+        );
+        assert_eq!(
+            references[2],
+            crate::openrouter::data_url_from_image(b"third")
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

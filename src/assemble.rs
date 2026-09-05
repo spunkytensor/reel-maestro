@@ -52,6 +52,8 @@ pub struct BuildOptions<'a> {
     pub duck: bool,
     /// Music gain multiplier (≥ 0). Higher is louder.
     pub music_volume: f64,
+    /// Normalize final audio for social-platform loudness targets.
+    pub loudnorm: bool,
     /// Master switch for burning captions. When `false` no subtitle file is produced.
     pub captions_on: bool,
     /// Enable cross-dissolve transitions between consecutive Ken Burns stills the scriptwriter
@@ -84,6 +86,13 @@ pub fn build(opts: BuildOptions<'_>) -> Result<PathBuf> {
     // Slice the audio timeline into one duration per scene, snapped to real word timings so cuts
     // land on the voiceover beats (see `scene_durations`).
     let durations = scene_durations(opts.scenes, opts.words, opts.audio)?;
+    if !opts.words.is_empty() {
+        std::fs::write(
+            opts.dir.join("captions.srt"),
+            captions::build_srt(opts.words),
+        )?;
+        println!("  captions: captions.srt");
+    }
 
     // Decide each scene's visual source: an AI video clip if one was produced for that
     // index, otherwise its still (which the renderer animates with Ken Burns). Renders
@@ -166,6 +175,7 @@ fn build_single_pass(
         music: music_name.as_deref(),
         duck: opts.duck,
         music_volume: opts.music_volume,
+        loudnorm: opts.loudnorm,
         captions,
         fontsdir,
         canvas: opts.canvas,
@@ -271,6 +281,7 @@ fn build_chunked(
         music_arg(opts.music).as_deref(),
         opts.duck,
         opts.music_volume,
+        opts.loudnorm,
         total,
         mix_name,
     )?;
@@ -298,14 +309,15 @@ pub fn chapter_windows(chapters: &[Chapter], durations: &[f64]) -> Vec<(f64, f64
 
 /// Per-scene durations in seconds. Each scene is shown while its narration line is actually being
 /// spoken (boundaries snapped to the real word-level timestamps in `words`), falling back to a
-/// word-count proportion when no timings exist (silent/no-narration). Every duration is floored at
-/// 0.5s so a one-word scene still gets a visible beat. Exposed (not private) so the video step can
-/// size its Veo clips to match the exact slot each scene will occupy in the final reel.
+/// word-count proportion when no timings exist (silent/no-narration). Windows enforce a 0.5s
+/// minimum beat where the audio timeline permits, while still tiling exactly to the audio length.
+/// Exposed (not private) so the video step can size its Veo clips to match the exact slot each
+/// scene will occupy in the final reel.
 pub fn scene_durations(scenes: &[Scene], words: &[WordTiming], audio: &Path) -> Result<Vec<f64>> {
     let total = ffmpeg::duration_s(audio)?;
     Ok(scene_windows(scenes, words, total)
         .into_iter()
-        .map(|(start, end)| (end - start).max(0.5))
+        .map(|(start, end)| end - start)
         .collect())
 }
 
@@ -318,14 +330,19 @@ pub fn scene_durations(scenes: &[Scene], words: &[WordTiming], audio: &Path) -> 
 /// When there are no real timings (silent / `--no-narration`), or the scene word counts don't line
 /// up with the timed words, it falls back to the cumulative word-count proportion. The boundary
 /// index maps proportionally into `words` so a count mismatch degrades gracefully rather than
-/// collapsing late scenes. The final scene is pinned to `total` so the visuals cover the audio end.
+/// collapsing late scenes. Each boundary is moved later as needed to give its preceding scene a
+/// 0.5s beat, clamped to `total`; the final scene can therefore be shorter only when there is not
+/// enough audio remaining. The final scene is pinned to `total` so the visuals cover the audio end.
 fn scene_windows(scenes: &[Scene], words: &[WordTiming], total: f64) -> Vec<(f64, f64)> {
-    // Word count per scene; `.max(1)` guarantees a blank/empty line still claims a share
-    // (and avoids a divide-by-zero if every line were empty).
-    let counts: Vec<usize> = scenes
+    // Empty lines do not claim narration-word time when any scene has words. If every line is
+    // empty, give each one an equal fallback share to avoid dividing by zero below.
+    let mut counts: Vec<usize> = scenes
         .iter()
-        .map(|s| s.line.split_whitespace().count().max(1))
+        .map(|s| s.line.split_whitespace().count())
         .collect();
+    if counts.iter().all(|&count| count == 0) {
+        counts.fill(1);
+    }
     let total_words: usize = counts.iter().sum();
     // Cumulative narration-word index at the start of each scene (`first_word[i]`).
     let mut first_word = Vec::with_capacity(scenes.len() + 1);
@@ -367,12 +384,14 @@ fn scene_windows(scenes: &[Scene], words: &[WordTiming], total: f64) -> Vec<(f64
     // Materialize each scene's start, forced non-decreasing. Whisper timestamps are normally
     // monotonic, but a noisy/out-of-order one (or a word-count vs timed-word mismatch) could pull a
     // later boundary earlier; clamping to the running max keeps adjacent windows from overlapping.
-    // With monotonic starts and the last scene pinned to `total`, the windows tile [0, total]
-    // exactly and the durations sum to the audio length (before the 0.5s floor in `scene_durations`).
+    // Move every boundary far enough right to give its preceding scene a visible 0.5s beat, but
+    // never past the audio end. With monotonic starts and the last scene pinned to `total`, the
+    // windows still tile [0, total] exactly and their durations sum to the audio length.
     let mut starts = Vec::with_capacity(scenes.len());
     let mut prev = 0.0_f64;
     for i in 0..scenes.len() {
-        let s = start_of(i).max(prev);
+        let minimum_start = if i == 0 { prev } else { prev + 0.5 };
+        let s = start_of(i).max(minimum_start).min(total);
         starts.push(s);
         prev = s;
     }
@@ -499,6 +518,38 @@ mod tests {
     }
 
     #[test]
+    fn scene_windows_preserve_audio_length_and_skip_empty_word_shares() {
+        let sc = |line: &str| Scene {
+            line: line.into(),
+            image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: String::new(),
+            motion_prompt: String::new(),
+        };
+        let word = |w: &str, s: f64, e: f64| WordTiming {
+            word: w.into(),
+            start_s: s,
+            end_s: e,
+        };
+
+        // A tiny first scene is extended inside the tiled windows, not after their durations are
+        // calculated, so the slots still total the audio duration.
+        let tiny = vec![sc("one"), sc("two")];
+        let windows = scene_windows(&tiny, &[word("one", 0.0, 0.1), word("two", 0.1, 1.0)], 1.0);
+        let durations: f64 = windows.iter().map(|(start, end)| end - start).sum();
+        assert!((durations - 1.0).abs() < 1e-6);
+        assert!((windows[0].1 - windows[0].0 - 0.5).abs() < 1e-6);
+
+        // The empty middle scene has no phantom word share, so the final scene's boundary maps to
+        // its first spoken word rather than a proportion shifted by the blank line.
+        let scenes = vec![sc("intro"), sc(""), sc("outro")];
+        let words = vec![word("intro", 0.0, 0.5), word("outro", 1.0, 1.5)];
+        let windows = scene_windows(&scenes, &words, 1.0);
+        assert!((windows[2].0 - words[1].start_s).abs() < 1e-6);
+    }
+
+    #[test]
     fn dissolve_plan_gates_on_transition_and_stills() {
         // A junction is owned by the INCOMING scene's `transition`: junction j uses scenes[j+1].
         let scenes = vec![
@@ -621,6 +672,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: true,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -781,6 +833,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: true,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -882,6 +935,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: false,
             dissolve: true,
             dissolve_seconds: 0.5,
@@ -980,6 +1034,7 @@ mod tests {
                 music: Some(&music),
                 duck,
                 music_volume: 0.6,
+                loudnorm: true,
                 captions_on: true,
                 dissolve: false,
                 dissolve_seconds: 0.5,
@@ -1112,6 +1167,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.5,
+            loudnorm: true,
             captions_on: true,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -1182,6 +1238,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.8,
+            loudnorm: true,
             captions_on: false,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -1253,6 +1310,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.8,
+            loudnorm: true,
             captions_on: false,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -1321,6 +1379,7 @@ mod tests {
             music: None,
             duck: true,
             music_volume: 0.8,
+            loudnorm: true,
             captions_on: false,
             dissolve: false,
             dissolve_seconds: 0.5,
@@ -1367,5 +1426,90 @@ mod tests {
         // Reel still plays and keeps its duration.
         assert!((ffmpeg::duration_s(&reel).unwrap() - 6.0).abs() < 1.0);
         println!("poster_smoke OK -> poster.jpg 1080x1920 + embedded cover art");
+    }
+
+    // Review defect #15: document scene-window edge cases for the defect #4 timing fix.
+    #[test]
+    fn scene_windows_document_word_mapping_fallbacks_and_duration_floor() {
+        let scene = |line: &str| Scene {
+            line: line.into(),
+            image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: String::new(),
+            motion_prompt: String::new(),
+        };
+        let word = |text: &str, start_s: f64, end_s: f64| WordTiming {
+            word: text.into(),
+            start_s,
+            end_s,
+        };
+
+        // Matching scene and timing word counts snap each cut to the next word's timestamp.
+        let scenes = vec![scene("one"), scene("two three"), scene("four")];
+        let words = vec![
+            word("one", 0.0, 0.2),
+            word("two", 0.6, 0.7),
+            word("three", 0.8, 0.9),
+            word("four", 1.7, 2.0),
+        ];
+        let windows = scene_windows(&scenes, &words, 2.0);
+        assert_eq!(
+            windows,
+            vec![
+                (0.0, words[1].start_s),
+                (words[1].start_s, words[3].start_s),
+                (words[3].start_s, 2.0),
+            ]
+        );
+
+        // A count mismatch maps boundaries proportionally into the available timed words.
+        let scenes = vec![scene("one two three"), scene("four five"), scene("six")];
+        let words = vec![
+            word("one", 0.0, 0.1),
+            word("two", 0.5, 0.6),
+            word("three", 1.0, 1.1),
+            word("four", 1.5, 1.6),
+        ];
+        let windows = scene_windows(&scenes, &words, 2.0);
+        assert_eq!(windows, vec![(0.0, 1.0), (1.0, 1.5), (1.5, 2.0)]);
+        assert!(windows.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+        assert_eq!(windows.last().unwrap().1, 2.0);
+
+        // An empty line claims no word share: the empty scene starts where its successor's first
+        // word is spoken and gets only the 0.5s minimum beat, so the later scene is delayed by
+        // that beat alone (1.5) rather than by a phantom proportional share (2.0).
+        let scenes = vec![scene("one"), scene(""), scene("two three four")];
+        let words = vec![
+            word("one", 0.0, 0.1),
+            word("two", 1.0, 1.1),
+            word("three", 2.0, 2.1),
+            word("four", 3.0, 3.1),
+        ];
+        let windows = scene_windows(&scenes, &words, 4.0);
+        assert_eq!(windows[1], (1.0, 1.5));
+        assert_eq!(windows[2].0, 1.5);
+
+        // No timings use word-count proportions rather than timestamp boundaries.
+        let scenes = vec![scene("one"), scene("two three")];
+        assert_eq!(
+            scene_windows(&scenes, &[], 3.0),
+            vec![(0.0, 1.0), (1.0, 3.0)]
+        );
+
+        // More than 15% zero-duration timings are rejected in favor of the same proportion.
+        let words = vec![word("one", 0.0, 0.5), word("two", 0.5, 0.5)];
+        assert_eq!(
+            scene_windows(&scenes, &words, 3.0),
+            vec![(0.0, 1.0), (1.0, 3.0)]
+        );
+
+        // The 0.5s minimum beat is enforced inside the tiling, so a tiny scene is widened at the
+        // expense of its neighbour and the durations still sum to the audio length.
+        let scenes = vec![scene("one"), scene(&"two ".repeat(100))];
+        let windows = scene_windows(&scenes, &[], 1.0);
+        assert_eq!(windows, vec![(0.0, 0.5), (0.5, 1.0)]);
+        let total: f64 = windows.iter().map(|(start, end)| end - start).sum();
+        assert!((total - 1.0).abs() < 1e-9, "durations summed to {total}");
     }
 }

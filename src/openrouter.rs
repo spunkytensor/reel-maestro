@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::config::Config;
 
 const BASE: &str = "https://openrouter.ai/api/v1";
+const MAX_CONSECUTIVE_POLL_FAILURES: usize = 3;
 
 /// Audio returned by text-to-speech, tagged with its container format.
 pub struct Speech {
@@ -48,6 +49,17 @@ pub struct OpenRouter {
     /// Aspect-ratio string for every image/video generation this run ("9:16" or "16:9"),
     /// resolved from the output format's canvas.
     pub aspect: String,
+}
+
+enum StructuredJsonAttemptError {
+    Request(anyhow::Error),
+    Parse { reply: String, error: anyhow::Error },
+}
+
+impl From<anyhow::Error> for StructuredJsonAttemptError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Request(error)
+    }
 }
 
 impl OpenRouter {
@@ -98,7 +110,7 @@ impl OpenRouter {
         schema: Value,
     ) -> Result<T> {
         const ATTEMPTS: usize = 3;
-        let body = json!({
+        let mut body = json!({
             "model": self.text_model,
             "messages": [
                 {"role": "system", "content": system},
@@ -111,9 +123,9 @@ impl OpenRouter {
         });
         let mut last_err = anyhow!("chat_json made no attempts");
         for attempt in 1..=ATTEMPTS {
-            match self.chat_json_once(&body).await {
+            match self.structured_json_once(&body, "chat").await {
                 Ok(t) => return Ok(t),
-                Err(e) => {
+                Err(StructuredJsonAttemptError::Request(e)) => {
                     if attempt < ATTEMPTS {
                         eprintln!(
                             "  structured chat failed ({e:#}); retrying ({}/{ATTEMPTS})",
@@ -124,18 +136,41 @@ impl OpenRouter {
                     }
                     last_err = e;
                 }
+                Err(StructuredJsonAttemptError::Parse { reply, error }) => {
+                    if attempt < ATTEMPTS {
+                        append_json_correction(&mut body, &reply, &error);
+                        eprintln!(
+                            "  structured chat failed ({error:#}); retrying ({}/{ATTEMPTS})",
+                            attempt + 1
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
+                            .await;
+                    }
+                    last_err = error;
+                }
             }
         }
         Err(last_err)
     }
 
-    /// One structured-chat attempt: request, surface non-2xx, extract the message text, parse.
-    async fn chat_json_once<T: DeserializeOwned>(&self, body: &Value) -> Result<T> {
-        let v = json_or_err(self.post("/chat/completions").json(body).send().await?).await?;
-        let content =
-            message_text(&v).ok_or_else(|| anyhow!("no message content in chat response: {v}"))?;
-        serde_json::from_str(&content).with_context(|| {
-            format!("could not parse structured output as expected schema: {content}")
+    /// One structured-output attempt: request, surface non-2xx, extract the message text, parse.
+    async fn structured_json_once<T: DeserializeOwned>(
+        &self,
+        body: &Value,
+        kind: &str,
+    ) -> std::result::Result<T, StructuredJsonAttemptError> {
+        let response = self
+            .post("/chat/completions")
+            .json(body)
+            .send()
+            .await
+            .map_err(anyhow::Error::from)?;
+        let v = json_or_err(response).await?;
+        let reply = message_text(&v)
+            .ok_or_else(|| anyhow!("no message content in {kind} response: {v}"))?;
+        serde_json::from_str(&reply).map_err(|error| StructuredJsonAttemptError::Parse {
+            reply: reply.clone(),
+            error: anyhow!("could not parse {kind} output as expected schema: {error}"),
         })
     }
 
@@ -157,7 +192,7 @@ impl OpenRouter {
             content.push(json!({ "type": "text", "text": label }));
             content.push(json!({ "type": "image_url", "image_url": { "url": url } }));
         }
-        let body = json!({
+        let mut body = json!({
             "model": self.judge_model,
             "messages": [
                 {"role": "system", "content": system},
@@ -170,27 +205,26 @@ impl OpenRouter {
         });
         let mut last_err = anyhow!("judge_json made no attempts");
         for attempt in 1..=ATTEMPTS {
-            match self.judge_json_once(&body).await {
+            match self.structured_json_once(&body, "judge").await {
                 Ok(t) => return Ok(t),
-                Err(e) => {
+                Err(StructuredJsonAttemptError::Request(e)) => {
                     if attempt < ATTEMPTS {
                         tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
                             .await;
                     }
                     last_err = e;
                 }
+                Err(StructuredJsonAttemptError::Parse { reply, error }) => {
+                    if attempt < ATTEMPTS {
+                        append_json_correction(&mut body, &reply, &error);
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs(attempt)))
+                            .await;
+                    }
+                    last_err = error;
+                }
             }
         }
         Err(last_err)
-    }
-
-    /// One judge attempt: request, surface non-2xx, extract the message text, parse.
-    async fn judge_json_once<T: DeserializeOwned>(&self, body: &Value) -> Result<T> {
-        let v = json_or_err(self.post("/chat/completions").json(body).send().await?).await?;
-        let reply =
-            message_text(&v).ok_or_else(|| anyhow!("no message content in judge response: {v}"))?;
-        serde_json::from_str(&reply)
-            .with_context(|| format!("could not parse judge output as expected schema: {reply}"))
     }
 
     /// Image generation through the chat-completions `modalities` path. Optional `references` are
@@ -406,16 +440,30 @@ impl OpenRouter {
             // Poll until done. Jobs take ~30s–several minutes; cap at ~10 minutes.
             let max_polls = 30;
             let mut failure: Option<String> = None;
+            let mut consecutive_poll_failures = 0;
             for _ in 0..max_polls {
                 tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                 match self.poll_video(&polling_url).await? {
-                    VideoStatus::Pending => continue,
-                    VideoStatus::Failed(msg) => {
-                        failure = Some(msg);
-                        break;
+                    PollVideoResult::Status(status) => {
+                        consecutive_poll_failures = 0;
+                        match status {
+                            VideoStatus::Pending => continue,
+                            VideoStatus::Failed(msg) => {
+                                failure = Some(msg);
+                                break;
+                            }
+                            VideoStatus::Done(content_url) => {
+                                return self.download_video(&content_url).await
+                            }
+                        }
                     }
-                    VideoStatus::Done(content_url) => {
-                        return self.download_video(&content_url).await
+                    PollVideoResult::Transient(e) => {
+                        consecutive_poll_failures += 1;
+                        if should_retry_poll(consecutive_poll_failures) {
+                            eprintln!("    poll failed ({e:#}); retrying ...");
+                            continue;
+                        }
+                        return Err(e);
                     }
                 }
             }
@@ -527,17 +575,39 @@ impl OpenRouter {
         Ok(format!("{BASE}/videos/{id}"))
     }
 
-    /// Poll a video job once and map its provider status to our `VideoStatus`. Terminal
-    /// success yields a content URL (preferring `unsigned_urls[0]`, else one built from the
-    /// job id); any not-yet-terminal status maps to `Pending` so the caller keeps polling.
-    async fn poll_video(&self, polling_url: &str) -> Result<VideoStatus> {
-        let resp = self
+    /// Poll a video job once. HTTP 4xx responses are permanent and returned as errors; network,
+    /// server, and JSON failures are transient so the caller can retry the same job. Terminal
+    /// success yields a content URL (preferring `unsigned_urls[0]`, else one built from the job
+    /// id); any not-yet-terminal status maps to `Pending` so the caller keeps polling.
+    async fn poll_video(&self, polling_url: &str) -> Result<PollVideoResult> {
+        let resp = match self
             .http
             .get(polling_url)
             .bearer_auth(&self.api_key)
             .send()
-            .await?;
-        let v = json_or_err(resp).await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => return Ok(PollVideoResult::Transient(e.into())),
+        };
+        let status = resp.status();
+        let text = match resp.text().await {
+            Ok(text) => text,
+            Err(e) => return Ok(PollVideoResult::Transient(e.into())),
+        };
+        if !status.is_success() {
+            let e = anyhow!("OpenRouter request failed ({status}): {text}");
+            if status.is_client_error() {
+                return Err(e);
+            }
+            return Ok(PollVideoResult::Transient(e));
+        }
+        let v: Value = match serde_json::from_str(&text)
+            .with_context(|| format!("invalid JSON from OpenRouter: {text}"))
+        {
+            Ok(v) => v,
+            Err(e) => return Ok(PollVideoResult::Transient(e)),
+        };
         match v["status"].as_str().unwrap_or("") {
             "completed" | "succeeded" => {
                 let url = v["unsigned_urls"][0]
@@ -548,11 +618,16 @@ impl OpenRouter {
                             .as_str()
                             .map(|id| format!("{BASE}/videos/{id}/content?index=0"))
                     })
-                    .ok_or_else(|| anyhow!("completed video job had no content url: {v}"))?;
-                Ok(VideoStatus::Done(url))
+                    .ok_or_else(|| anyhow!("completed video job had no content url: {v}"));
+                match url {
+                    Ok(url) => Ok(PollVideoResult::Status(VideoStatus::Done(url))),
+                    Err(e) => Ok(PollVideoResult::Transient(e)),
+                }
             }
-            "failed" | "cancelled" | "expired" => Ok(VideoStatus::Failed(describe_video_error(&v))),
-            _ => Ok(VideoStatus::Pending),
+            "failed" | "cancelled" | "expired" => Ok(PollVideoResult::Status(VideoStatus::Failed(
+                describe_video_error(&v),
+            ))),
+            _ => Ok(PollVideoResult::Status(VideoStatus::Pending)),
         }
     }
 
@@ -641,6 +716,18 @@ enum VideoStatus {
     Pending,
     Done(String),
     Failed(String),
+}
+
+/// Outcome of polling a video job. Permanent HTTP client errors are returned directly from
+/// `poll_video`; this carries failures that can be retried without abandoning the submitted job.
+enum PollVideoResult {
+    Status(VideoStatus),
+    Transient(anyhow::Error),
+}
+
+/// Whether a transient poll failure is still below the consecutive-failure limit.
+fn should_retry_poll(consecutive_failures: usize) -> bool {
+    consecutive_failures < MAX_CONSECUTIVE_POLL_FAILURES
 }
 
 /// Build the most informative failure string we can from a terminal video-job response. Veo (and
@@ -805,6 +892,20 @@ fn message_text(v: &Value) -> Option<String> {
     None
 }
 
+/// Extend a failed structured-output request so a retry asks the model to repair its reply.
+fn append_json_correction(body: &mut Value, reply: &str, error: &anyhow::Error) {
+    let messages = body["messages"]
+        .as_array_mut()
+        .expect("structured request body has messages");
+    messages.push(json!({ "role": "assistant", "content": reply }));
+    messages.push(json!({
+        "role": "user",
+        "content": format!(
+            "That was not valid JSON matching the schema: {error}. Reply with ONLY the corrected JSON object."
+        ),
+    }));
+}
+
 fn image_content(prompt: &str, references: &[(String, String)]) -> Value {
     if references.is_empty() {
         return json!(prompt);
@@ -832,6 +933,35 @@ mod tests {
         assert_eq!(backoff_secs(1), 2);
         assert_eq!(backoff_secs(2), 5);
         assert_eq!(backoff_secs(3), 5);
+    }
+
+    #[test]
+    fn poll_retries_only_before_the_consecutive_failure_limit() {
+        assert!(should_retry_poll(1));
+        assert!(should_retry_poll(MAX_CONSECUTIVE_POLL_FAILURES - 1));
+        assert!(!should_retry_poll(MAX_CONSECUTIVE_POLL_FAILURES));
+    }
+
+    #[test]
+    fn json_correction_changes_retry_request_body() {
+        let mut body = json!({
+            "messages": [{ "role": "user", "content": "Return a JSON object." }],
+            "response_format": { "type": "json_schema" },
+        });
+        let first_body = body.clone();
+
+        append_json_correction(&mut body, "not json", &anyhow!("expected a string"));
+
+        assert_ne!(body, first_body);
+        assert_eq!(
+            body["messages"][1],
+            json!({ "role": "assistant", "content": "not json" })
+        );
+        assert_eq!(
+            body["messages"][2]["content"],
+            "That was not valid JSON matching the schema: expected a string. Reply with ONLY the corrected JSON object."
+        );
+        assert_eq!(body["response_format"], first_body["response_format"]);
     }
 
     #[test]
