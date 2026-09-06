@@ -12,6 +12,84 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::captions::CaptionPreset;
 use crate::config::{Format, VideoInputMode, VideoProvider};
 
+#[test]
+fn progress_uses_standard_status_without_local_metadata() {
+    // OpenRouter VideoGenerationResponse statuses, verified against openapi.json.
+    for (status, label) in [
+        ("pending", "queued"),
+        ("in_progress", "generating"),
+        ("completed", "completed"),
+        ("failed", "failed"),
+        ("cancelled", "cancelled"),
+        ("expired", "expired"),
+    ] {
+        let value = json!({"id":"job", "polling_url":"/api/v1/videos/job", "status":status});
+        for verbose in [false, true] {
+            assert_eq!(
+                ProgressReporter::default().update(&value, Duration::from_secs(125), verbose),
+                Some(format!("{label} — elapsed 2m 05s"))
+            );
+        }
+    }
+}
+
+#[test]
+fn progress_throttles_steps_but_reports_heartbeat_and_terminal_status() {
+    let mut reporter = ProgressReporter::default();
+    let mut value = json!({"status":"in_progress", "local":{
+        "phase":"denoising", "progress":{"completed":0,"total":49}
+    }});
+    assert_eq!(
+        reporter.update(&value, Duration::ZERO, false).unwrap(),
+        "generating — elapsed 0m 00s"
+    );
+    for step in 1..=49 {
+        value["local"]["progress"]["completed"] = json!(step);
+        assert!(reporter
+            .update(&value, Duration::from_secs(step), false)
+            .is_none());
+    }
+    for (second, phase) in [(50, "decoding"), (55, "encoding"), (59, "ready")] {
+        value["local"]["phase"] = json!(phase);
+        assert!(reporter
+            .update(&value, Duration::from_secs(second), false)
+            .is_none());
+    }
+    assert_eq!(
+        reporter
+            .update(&value, Duration::from_secs(60), false)
+            .unwrap(),
+        "generating — elapsed 1m 00s"
+    );
+    value["status"] = json!("completed");
+    assert_eq!(
+        reporter
+            .update(&value, Duration::from_secs(61), false)
+            .unwrap(),
+        "completed — elapsed 1m 01s"
+    );
+}
+
+#[test]
+fn verbose_progress_keeps_optional_diagnostics_without_duplicate_phase() {
+    let mut reporter = ProgressReporter::default();
+    let mut value = json!({"status":"in_progress", "local":{
+        "phase":"denoising", "progress":{"completed":48,"total":49}
+    }});
+    assert_eq!(
+        reporter.update(&value, Duration::ZERO, true).unwrap(),
+        "generating, phase: denoising, steps: 48/49 — elapsed 0m 00s"
+    );
+    value["local"]["progress"]["completed"] = json!(49);
+    value["local"]["phase"] = json!("decoding");
+    assert_eq!(
+        reporter
+            .update(&value, Duration::from_secs(5), true)
+            .unwrap(),
+        "generating, phase: decoding, steps: 49/49 — elapsed 0m 05s"
+    );
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -205,6 +283,7 @@ fn cfg(origin: &str, mode: VideoInputMode) -> Config {
         video_seed: 42,
         video_steps: 50,
         video_wait_timeout: 1,
+        verbose: false,
         video_size_explicit: false,
         video_model_explicit: false,
         voice: None,

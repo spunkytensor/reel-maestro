@@ -330,6 +330,22 @@ A local `--from` resume may omit `OPENROUTER_API_KEY` only when narration, poste
 already exist and no fresh hosted stage is requested. Other stages remain on OpenRouter.
 `H3_STUDIO_KEY` is accepted as a fallback local token; `REELMAESTRO_VIDEO_API_TOKEN` is preferred.
 
+Local video progress shows provider-neutral status and elapsed polling time (since this
+invocation began polling, reset on resume). Interactive terminals update one line; redirected
+logs show status transitions immediately and otherwise at most one update per minute of
+successful polling. Add `--verbose` to log optional local phases and step-counter changes;
+Studio and the job manifest retain local diagnostics regardless of this flag.
+
+Progress follows the standard `status` field, not H3 phase names or denoising counters.
+Finishing denoising does not mean generation is complete: decoding and encoding may remain.
+No percentage is invented. The API contract is unchanged: the
+[OpenRouter OpenAPI schema](https://openrouter.ai/openapi.json) (checked 2026-09-06) defines
+`pending`, `in_progress`, `completed`, `failed`, `cancelled`, and `expired` statuses, with
+`id`, `polling_url`, and `status` required, and optional `error`, `generation_id`,
+`unsigned_urls`, and `usage`. It does not define percentage progress. Local diagnostics
+are optional extensions; polling and completion do not depend on them. A displayed
+`completed` status means server generation completed; local download and validation follow.
+
 ```bash
 # Animate an existing preview without any OpenRouter credential in this process.
 OPENROUTER_API_KEY='' reelmaestro --from out/my-preview --video-scenes 1 \

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::hash::{Hash, Hasher};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -15,6 +16,73 @@ use crate::config::{Config, VideoInputMode};
 #[cfg(test)]
 #[path = "local_tests.rs"]
 mod tests;
+
+#[derive(Default)]
+struct ProgressReporter {
+    last_message: Option<String>,
+    last_report: Duration,
+    interactive: bool,
+}
+
+impl ProgressReporter {
+    fn report(&mut self, scene: usize, value: &Value, elapsed: Duration, verbose: bool) {
+        if let Some(message) = self.update(value, elapsed, verbose) {
+            if self.interactive {
+                print!("\r\x1b[2K  scene {scene}: {message}");
+                let _ = std::io::stdout().flush();
+            } else {
+                println!("  scene {scene}: {message}");
+            }
+        }
+    }
+
+    fn update(&mut self, value: &Value, elapsed: Duration, verbose: bool) -> Option<String> {
+        let status = value["status"].as_str().unwrap_or("unknown");
+        let label = match status {
+            "pending" => "queued",
+            "in_progress" => "generating",
+            "completed" => "completed",
+            "failed" => "failed",
+            "cancelled" => "cancelled",
+            "expired" => "expired",
+            _ => "waiting",
+        };
+        let mut message = label.to_owned();
+        if verbose {
+            if let Some(phase) = value["local"]["phase"].as_str() {
+                message.push_str(&format!(", phase: {phase}"));
+            }
+            if let (Some(done), Some(total)) = (
+                value["local"]["progress"]["completed"].as_u64(),
+                value["local"]["progress"]["total"].as_u64(),
+            ) {
+                message.push_str(&format!(", steps: {done}/{total}"));
+            }
+        }
+        // Local diagnostics never determine completion or trigger default log spam.
+        if self.last_message.as_deref() == Some(&message)
+            && elapsed.saturating_sub(self.last_report)
+                < Duration::from_secs(if self.interactive { 5 } else { 60 })
+        {
+            return None;
+        }
+        self.last_message = Some(message.clone());
+        self.last_report = elapsed;
+        Some(format!(
+            "{message} — elapsed {}m {:02}s",
+            elapsed.as_secs() / 60,
+            elapsed.as_secs() % 60
+        ))
+    }
+}
+
+impl Drop for ProgressReporter {
+    fn drop(&mut self) {
+        if self.interactive && self.last_message.is_some() {
+            println!();
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct Discovery {
@@ -323,7 +391,13 @@ pub(super) async fn generate_local_clip(
         .clone()
         .ok_or_else(|| anyhow!("manifest has no polling URL"))?;
     let poll = same_origin(cfg, &poll)?;
-    let deadline = Instant::now() + Duration::from_secs(cfg.video_wait_timeout.saturating_mul(60));
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(cfg.video_wait_timeout.saturating_mul(60));
+    let mut progress = ProgressReporter {
+        interactive: std::io::stdout().is_terminal() && !cfg.verbose,
+        last_message: None,
+        last_report: Duration::ZERO,
+    };
     loop {
         let response = match local_http()?
             .get(&poll)
@@ -378,21 +452,7 @@ pub(super) async fn generate_local_clip(
                 continue;
             }
         };
-        if manifest.status.as_deref() != value["status"].as_str()
-            || manifest.metadata["phase"] != value["local"]["phase"]
-            || manifest.metadata["progress"]["completed"] != value["local"]["progress"]["completed"]
-        {
-            let phase = value["local"]["phase"].as_str().unwrap_or("waiting");
-            let state = value["status"].as_str().unwrap_or("unknown");
-            let progress = match (
-                value["local"]["progress"]["completed"].as_u64(),
-                value["local"]["progress"]["total"].as_u64(),
-            ) {
-                (Some(done), Some(total)) => format!(", denoising {done}/{total}"),
-                _ => String::new(),
-            };
-            println!("  scene {scene}: H3 {state}, {phase}{progress}");
-        }
+        progress.report(scene, &value, started.elapsed(), cfg.verbose);
         manifest.status = value["status"].as_str().map(str::to_owned);
         manifest.metadata = value["local"].clone();
         atomic_json(&manifest_path, &manifest)?;

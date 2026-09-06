@@ -31,6 +31,10 @@ use openrouter::OpenRouter;
 #[derive(Parser, Debug)]
 #[command(name = "reelmaestro", version, about)]
 pub struct Cli {
+    /// Show detailed local video phases and denoising counters.
+    #[arg(long)]
+    verbose: bool,
+
     /// A topic/idea; the AI writes the whole script.
     #[arg(long, conflicts_with_all = ["script", "url"])]
     topic: Option<String>,

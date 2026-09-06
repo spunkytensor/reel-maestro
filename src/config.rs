@@ -318,6 +318,7 @@ pub struct Config {
     pub video_seed: u64,
     pub video_steps: u32,
     pub video_wait_timeout: u64,
+    pub verbose: bool,
     pub video_size_explicit: bool,
     /// Whether `video_model` came from an explicit `--video-model`/env (not a format/tier
     /// default). On `--from` resume, a non-explicit model is re-derived from the *stored*
@@ -540,6 +541,7 @@ impl Config {
                 (None, None) => 50,
             },
             video_wait_timeout,
+            verbose: cli.verbose,
             video_size_explicit: cli.video_size.is_some()
                 || std::env::var("REELMAESTRO_VIDEO_SIZE").is_ok(),
             video_model_explicit: cli.video_model.is_some()
