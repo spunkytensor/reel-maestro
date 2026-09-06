@@ -55,6 +55,13 @@ cargo test video_mode_smoke -- --ignored --nocapture
 End-to-end runs call paid model APIs. Only run them intentionally, with your own
 `OPENROUTER_API_KEY`, and note that they may incur charges.
 
+Automated local H3 tests use bounded loopback HTTP fixtures, never OpenRouter or a GPU worker.
+`cargo test` also exercises authenticated MP4 delivery with an FFmpeg-generated fixture, so
+install `ffmpeg`/`ffprobe` before running that suite. CLI configuration tests isolate their
+environment and do not read your `.env`. Run real H3 validation only with explicit operator
+approval, without stopping unrelated jobs; retain the same manifest when testing resume.
+Keep local bearer credentials, manifests, and generated media out of Git.
+
 ## Security artifacts
 
 The CVE Audit workflow checks the Rust dependency lockfile on pushes, pull requests, and a weekly

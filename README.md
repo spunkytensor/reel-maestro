@@ -234,6 +234,12 @@ Final audio is normalized in a single pass toward −14 LUFS for social-platform
 | `--video` | off | Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video model/resolution (default Veo 3.1 Lite ≈ $0.05/sec at 720p). |
 | `--video-scenes <N>` | — | Render only the first N scenes as video; the rest stay Ken Burns stills (caps cost). |
 | `--video-resolution <res>` | tier (`720p`) | Video clip resolution: `720p` or `1080p` (case-insensitive; invalid values fail before generation). Defaults from the quality tier (`1080p` on `premium`). |
+| `--video-provider <openrouter\|local>` | `openrouter` | Route only video generation to OpenRouter or private local H3. |
+| `--video-base-url <origin>` | `http://127.0.0.1:8088` | Local H3 origin. |
+| `--video-size <WxH>` | Format-dependent | Exact local canvas; defaults to 544x960 for reels and 960x544 for YouTube, including resumed runs. |
+| `--video-input-mode <first-frame\|text>` | `first-frame` | Animate each generated still, or explicitly use text-only H3 generation. |
+| `--video-seed`, `--video-steps` | `42`, `50` | Local H3 seed and discovered sigma-grid point count. |
+| `--video-wait-timeout <minutes>` | `60` | Stop waiting without abandoning the accepted local job. |
 | `--quality <draft\|standard\|premium>` | `standard` | Quality/cost tier presetting the model defaults: `draft` = cheapest models + validation off (~3-5x cheaper); `premium` = Opus script, Veo 3.1 Fast 1080p, deepest validation. Explicit model flags/envs still override. |
 | `--format <reel\|youtube>` | `reel` | Output format. `youtube` = landscape 16:9 long-form with a chaptered script, per-chapter TTS + rendering, a 1280x720 thumbnail, and a `youtube.md` metadata file (title/description/tags/chapter timestamps). |
 | `--minutes <N>` | `3` | Target length in minutes for `--format youtube` (1-12). Drives the narration word budget, scene count, and chapter count (~1/min). |
@@ -302,6 +308,79 @@ reelmaestro --topic "the history of espresso" --format youtube --minutes 5
 
 `--from <dir>` resume reads the stored format from `script.json`, so re-renders and `--video`
 upgrades keep the right geometry automatically.
+
+### Private local MiniMax H3 video
+
+Set `REELMAESTRO_VIDEO_PROVIDER=local` and `REELMAESTRO_VIDEO_API_TOKEN`, then use `--video`.
+Reel Maestro checks authenticated health and `/api/v1/videos/models` before fresh paid work,
+requires `local/minimax-h3`, and uses exact native sizes: 544x960 for reels and 960x544 for
+YouTube. Local mode rejects `--video-resolution`, uses discovered 5/10-second durations, and is
+$0 metered. It never falls back, downgrades, or rerolls through a hosted video provider.
+Local model IDs and local-only CLI controls require `--video-provider local`; they cannot
+silently retain the paid hosted default.
+
+Scenes run sequentially. First-frame mode uploads the still as authenticated binary data; text
+mode omits it. Requests select original export, `generate_audio=false`, and no negative prompt.
+Before POST, `scene-NN.video-job.json` atomically stores the exact request, non-secret fingerprint,
+and stable idempotency key. It then retains the accepted job ID/poll URL, so rerunning after a
+timeout or interruption resumes the same job. Poll/content URLs must be same-origin, redirects
+are disabled, and downloads pass `ffprobe` before atomic `scene-NN.mp4` publication.
+
+A local `--from` resume may omit `OPENROUTER_API_KEY` only when narration, poster, and all scene stills
+already exist and no fresh hosted stage is requested. Other stages remain on OpenRouter.
+`H3_STUDIO_KEY` is accepted as a fallback local token; `REELMAESTRO_VIDEO_API_TOKEN` is preferred.
+
+Local video progress shows provider-neutral status and elapsed polling time (since this
+invocation began polling, reset on resume). Interactive terminals update one line; redirected
+logs show status transitions immediately and otherwise at most one update per minute of
+successful polling. Add `--verbose` to log optional local phases and step-counter changes;
+Studio and the job manifest retain local diagnostics regardless of this flag.
+
+Progress follows the standard `status` field, not H3 phase names or denoising counters.
+Finishing denoising does not mean generation is complete: decoding and encoding may remain.
+No percentage is invented. The API contract is unchanged: the
+[OpenRouter OpenAPI schema](https://openrouter.ai/openapi.json) (checked 2026-09-06) defines
+`pending`, `in_progress`, `completed`, `failed`, `cancelled`, and `expired` statuses, with
+`id`, `polling_url`, and `status` required, and optional `error`, `generation_id`,
+`unsigned_urls`, and `usage`. It does not define percentage progress. Local diagnostics
+are optional extensions; polling and completion do not depend on them. A displayed
+`completed` status means server generation completed; local download and validation follow.
+
+```bash
+# Animate an existing preview without any OpenRouter credential in this process.
+OPENROUTER_API_KEY='' reelmaestro --from out/my-preview --video-scenes 1 \
+  --video-provider local --video-base-url http://127.0.0.1:8088
+
+# Resume the SAME accepted job after a timeout; keep its manifest.
+OPENROUTER_API_KEY='' reelmaestro --from out/my-preview --video-scenes 1 \
+  --video-provider local --video-wait-timeout 120
+```
+
+The default wait budget is 60 minutes **per clip**, including queue/cold-load time. A deadline
+does not cancel the server job: remaining submissions stop and the current render uses stills
+where clips are unavailable. Retry the same command to reconcile an uncertain POST using its
+persisted key. Accepted failed jobs are never automatically rerolled. To intentionally regenerate,
+first confirm the old job is terminal in H3 Studio, then remove that scene's clip and manifest.
+Do not run two consumers against the same run folder simultaneously. Changed inputs/settings or
+service origins are rejected while a manifest exists rather than silently generating a new job.
+
+Local means **no metered video API charge**, not zero hardware/electricity cost or an offline
+end-to-end pipeline. Silent delivery strips H3's jointly generated audio and saves no inference
+compute. H3's 5/10-second requests produce 124/243 frames at 24 fps; assembly probes the actual
+clip and fits it to narration. Long scene windows may stretch the longest supported clip.
+Original output is scaled by Reel Maestro; H3's padded landscape `1080p` export is not requested.
+The job manifest retains provider provenance/measurements; disclose AI generation when sharing.
+
+This adapter targets the [local H3 service contract](https://github.com/mattcurf/minimax-h3).
+Provision it separately and comply with the model license or your separate grant; Reel Maestro
+does not download weights or confer model-use rights. The recorded setup uses a 32 GB RTX 5090
+and substantial host RAM (some reference tests exceeded 200 GiB). Advertised profiles are not
+a guarantee of feasibility on every host. Check the provider's verification record before
+relying on portrait, 10-second, or other experimental combinations. HTTP tokens are unencrypted:
+use a trusted network/VPN or a private HTTPS reverse proxy, not a public listener.
+
+Initial integration supports first-frame animation and explicit `--video-input-mode text`.
+Last-frame/ordered-reference controls and native-soundtrack mixing remain separate follow-ups.
 
 ## Models (defaults)
 

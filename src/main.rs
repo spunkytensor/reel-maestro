@@ -31,6 +31,10 @@ use openrouter::OpenRouter;
 #[derive(Parser, Debug)]
 #[command(name = "reelmaestro", version, about)]
 pub struct Cli {
+    /// Show detailed local video phases and denoising counters.
+    #[arg(long)]
+    verbose: bool,
+
     /// A topic/idea; the AI writes the whole script.
     #[arg(long, conflicts_with_all = ["script", "url"])]
     topic: Option<String>,
@@ -86,8 +90,8 @@ pub struct Cli {
     #[arg(long, conflicts_with = "from")]
     no_images: bool,
 
-    /// Render ALL scenes as AI video clips (Veo image-to-video). Cost depends on the video
-    /// model/resolution — the default Veo 3.1 Lite is ~$0.05/sec at 720p.
+    /// Render ALL scenes as AI video clips using --video-provider. Hosted generation costs
+    /// money; --video-provider local uses the private H3 service with no metered video charge.
     #[arg(long)]
     video: bool,
 
@@ -95,10 +99,38 @@ pub struct Cli {
     #[arg(long)]
     video_scenes: Option<usize>,
 
-    /// Video clip resolution (720p or 1080p). Default comes from the quality tier (720p except
-    /// --quality premium).
+    /// Hosted video clip resolution (720p or 1080p). Defaults from the quality tier.
+    /// For local video use --video-size instead.
     #[arg(long)]
     video_resolution: Option<String>,
+
+    /// Exact local H3 output dimensions (default: 544x960 for reels, 960x544 for YouTube).
+    #[arg(long)]
+    video_size: Option<String>,
+
+    /// Video generation service: OpenRouter (default) or the private local H3 REST service.
+    #[arg(long, value_enum)]
+    video_provider: Option<config::VideoProvider>,
+
+    /// Origin of the local H3 service (no API path).
+    #[arg(long)]
+    video_base_url: Option<String>,
+
+    /// Local H3 input mode: animate each scene still, or generate from text only.
+    #[arg(long, value_enum)]
+    video_input_mode: Option<config::VideoInputMode>,
+
+    /// Local H3 random seed.
+    #[arg(long)]
+    video_seed: Option<u64>,
+
+    /// Local H3 sigma-grid points (discovered range is validated before submission).
+    #[arg(long)]
+    video_steps: Option<u32>,
+
+    /// Maximum minutes to wait for an accepted local H3 job (it remains resumable afterward).
+    #[arg(long)]
+    video_wait_timeout: Option<u64>,
 
     /// Don't burn captions into the video.
     #[arg(long)]
@@ -371,7 +403,13 @@ async fn run(cli: &Cli) -> Result<()> {
     if !(0.5..=2.0).contains(&cli.speed) {
         bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
     }
-    let cfg = Config::load(cli)?;
+    let mut cfg = Config::load(cli)?;
+    if cfg.video_provider == config::VideoProvider::Local
+        && cli.from.is_none()
+        && (cli.video || cli.video_scenes.is_some())
+    {
+        video::preflight_local(&cfg).await?;
+    }
     // Cost guard for fresh runs: an upper-bound estimate before the first paid call (the script).
     // A `--from` resume is estimated later, once the stored script and assets are known.
     if cli.from.is_none() && enforce_cost_guard(cli, &cfg, &preflight_cost_estimate(cli, &cfg))? {
@@ -465,6 +503,21 @@ async fn run(cli: &Cli) -> Result<()> {
     // rest of the pipeline only deals with the multi-character/location model.
     script.normalize_entities();
 
+    // A local-video resume may intentionally have no OpenRouter credential. Fail locally before
+    // any hosted stage if the run folder is incomplete instead of accidentally making a request.
+    if resume && cfg.api_key.is_empty() {
+        let missing_images = images::missing_scenes(&dir, script.scenes.len());
+        if !dir.join("audio.mp3").exists()
+            || !dir.join("poster.jpg").exists()
+            || !missing_images.is_empty()
+        {
+            bail!("this credential-free local resume is missing required hosted assets (audio, poster or scene stills); restore them or set OPENROUTER_API_KEY");
+        }
+        if cli.music_gen {
+            bail!("--music-gen is a hosted stage and requires OPENROUTER_API_KEY");
+        }
+    }
+
     // The effective format: fresh runs stamp the config's format into the script; resumed runs
     // read it back from script.json so render geometry always matches the stored assets — a
     // conflicting --format on resume is noted and deferred to the script's.
@@ -488,13 +541,23 @@ async fn run(cli: &Cli) -> Result<()> {
         cfg.format
     };
     let canvas = config::canvas(format);
+    cfg.apply_video_format(format);
+    if cfg.video_provider == config::VideoProvider::Local
+        && resume
+        && (cli.video || cli.video_scenes.is_some())
+    {
+        video::preflight_local(&cfg).await?;
+    }
     // The aspect the image/video APIs are asked for must track the effective format too.
     or.aspect = canvas.aspect_str().to_string();
     // ...and so must the video-model default. On a `--from` resume that omits `--format`, the
     // config resolved the model from the (defaulted) reel format; re-derive the youtube default
     // (Wan) from the stored format so rehydrating a youtube preview with --video uses the same
     // model the first run would have. An explicit --video-model/env still wins.
-    if !cfg.video_model_explicit && format == config::Format::Youtube {
+    if cfg.video_provider == config::VideoProvider::Openrouter
+        && !cfg.video_model_explicit
+        && format == config::Format::Youtube
+    {
         or.video_model = "alibaba/wan-2.6".to_string();
     }
 
@@ -695,7 +758,9 @@ async fn run(cli: &Cli) -> Result<()> {
             } else {
                 String::new()
             };
-            let estimate_note = if config::video_cost_is_guess(&or.video_model) {
+            let estimate_note = if cfg.video_provider == config::VideoProvider::Local {
+                " (local, $0 metered)"
+            } else if config::video_cost_is_guess(&or.video_model) {
                 " (estimate: unknown model, assuming $0.40/s)"
             } else {
                 ""
@@ -704,7 +769,7 @@ async fn run(cli: &Cli) -> Result<()> {
                 "→ generating {} video scene(s){reuse_note} ({}, ~{secs}s ≈ ${:.2}){estimate_note} ...",
                 to_make.len(),
                 or.video_model,
-                secs as f64 * config::video_cost_per_second(&or.video_model, &cfg.video_resolution)
+                if cfg.video_provider == config::VideoProvider::Local { 0.0 } else { secs as f64 * config::video_cost_per_second(&or.video_model, &cfg.video_resolution) }
             );
         }
         video::generate(
@@ -717,6 +782,7 @@ async fn run(cli: &Cli) -> Result<()> {
             video_count,
             &cfg.video_resolution,
             &dir,
+            &cfg,
         )
         .await
     } else {
