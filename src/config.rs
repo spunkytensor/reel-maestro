@@ -3,10 +3,22 @@
 
 //! Resolves runtime configuration: CLI flag > environment variable > quality-tier default.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::ValueEnum;
 
 use crate::{captions::CaptionPreset, Cli};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum VideoProvider {
+    Openrouter,
+    Local,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, ValueEnum)]
+pub enum VideoInputMode {
+    FirstFrame,
+    Text,
+}
 
 /// Output format: a vertical short-form reel or a landscape long-form YouTube video. Drives the
 /// canvas geometry, script structure (single-shot vs chaptered), caption styling, poster aspect,
@@ -149,7 +161,9 @@ pub fn tier_defaults(q: Quality) -> TierDefaults {
 /// guess with [`video_cost_is_guess`].
 pub fn video_cost_per_second(model: &str, resolution: &str) -> f64 {
     let hd = resolution.trim().starts_with("1080");
-    if model.contains("veo-3.1-lite") {
+    if model == "local/minimax-h3" {
+        0.0
+    } else if model.contains("veo-3.1-lite") {
         if hd {
             0.08
         } else {
@@ -178,7 +192,8 @@ pub fn video_cost_per_second(model: &str, resolution: &str) -> f64 {
 
 /// Whether a video-cost estimate uses the conservative unknown-model fallback.
 pub fn video_cost_is_guess(model: &str) -> bool {
-    !(model.contains("veo")
+    !(model == "local/minimax-h3"
+        || model.contains("veo")
         || model.contains("wan-2.6")
         || model.contains("seedance")
         || model.contains("kling"))
@@ -281,7 +296,7 @@ fn normalize_video_resolution(resolution: String) -> Result<String> {
 /// CLI-flag > env-var > quality-tier-default precedence (see `load`), so the rest of the
 /// program reads concrete values and never touches the environment again.
 pub struct Config {
-    /// OpenRouter API key (required; the only setting with no default).
+    /// OpenRouter credential; empty only for a local-provider resume with saved hosted assets.
     pub api_key: String,
     /// Output format: vertical short reel or landscape long-form YouTube video.
     pub format: Format,
@@ -296,6 +311,14 @@ pub struct Config {
     pub tts_model: String,
     pub music_model: String,
     pub video_model: String,
+    pub video_provider: VideoProvider,
+    pub video_base_url: String,
+    pub video_api_token: Option<String>,
+    pub video_input_mode: VideoInputMode,
+    pub video_seed: u64,
+    pub video_steps: u32,
+    pub video_wait_timeout: u64,
+    pub video_size_explicit: bool,
     /// Whether `video_model` came from an explicit `--video-model`/env (not a format/tier
     /// default). On `--from` resume, a non-explicit model is re-derived from the *stored*
     /// format so a youtube run's stills rehydrate with the youtube video default (Wan) even
@@ -303,7 +326,7 @@ pub struct Config {
     pub video_model_explicit: bool,
     /// Explicit TTS voice; `None` means auto-select by the script's narrator gender.
     pub voice: Option<String>,
-    /// Veo clip resolution ("720p" / "1080p").
+    /// Hosted clip resolution ("720p" / "1080p") or exact local canvas (e.g. "544x960").
     pub video_resolution: String,
     /// Per-scene validation effort: 0 = off, 2/3 = candidates judged per scene.
     pub validate_scene: usize,
@@ -326,11 +349,66 @@ pub struct Config {
 }
 
 impl Config {
-    /// Resolve every setting for this run. The API key is mandatory and fails fast if missing;
-    /// everything else falls back through env var to the quality tier's default.
+    /// Resolve local geometry after reading the saved run's format, preserving explicit sizes.
+    pub fn apply_video_format(&mut self, format: Format) {
+        if self.video_provider == VideoProvider::Local && !self.video_size_explicit {
+            self.video_resolution = match format {
+                Format::Reel => "544x960".into(),
+                Format::Youtube => "960x544".into(),
+            };
+        }
+    }
+
+    /// Resolve CLI > environment > defaults. Hosted stages require an OpenRouter key;
+    /// complete local-video resumes may omit it.
     pub fn load(cli: &Cli) -> Result<Config> {
-        let api_key = std::env::var("OPENROUTER_API_KEY")
-            .context("OPENROUTER_API_KEY is not set (put it in a .env file or your environment)")?;
+        let provider_env = std::env::var("REELMAESTRO_VIDEO_PROVIDER").ok();
+        let video_provider = match (cli.video_provider, provider_env.as_deref()) {
+            (Some(provider), _) => provider,
+            (None, Some("local")) => VideoProvider::Local,
+            (None, Some("openrouter")) | (None, None) => VideoProvider::Openrouter,
+            (None, Some(value)) => {
+                bail!("invalid REELMAESTRO_VIDEO_PROVIDER={value:?}; expected local or openrouter")
+            }
+        };
+        let input_mode_env = std::env::var("REELMAESTRO_VIDEO_INPUT_MODE").ok();
+        let video_input_mode = match (cli.video_input_mode, input_mode_env.as_deref()) {
+            (Some(mode), _) => mode,
+            (None, Some("text")) => VideoInputMode::Text,
+            (None, Some("first-frame")) | (None, None) => VideoInputMode::FirstFrame,
+            (None, Some(value)) => bail!(
+                "invalid REELMAESTRO_VIDEO_INPUT_MODE={value:?}; expected text or first-frame"
+            ),
+        };
+        let video_seed = match (cli.video_seed, std::env::var("REELMAESTRO_VIDEO_SEED").ok()) {
+            (Some(value), _) => value,
+            (None, Some(value)) => value.parse().map_err(|_| {
+                anyhow::anyhow!("invalid REELMAESTRO_VIDEO_SEED={value:?}; expected an integer")
+            })?,
+            (None, None) => 42,
+        };
+        if video_seed > i64::MAX as u64 {
+            bail!("--video-seed must be at most {}", i64::MAX);
+        }
+        let video_wait_timeout = match (
+            cli.video_wait_timeout,
+            std::env::var("REELMAESTRO_VIDEO_WAIT_TIMEOUT").ok(),
+        ) {
+            (Some(value), _) => value,
+            (None, Some(value)) => value.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "invalid REELMAESTRO_VIDEO_WAIT_TIMEOUT={value:?}; expected minutes"
+                )
+            })?,
+            (None, None) => 60,
+        };
+        if video_wait_timeout == 0 || video_wait_timeout > 24 * 60 {
+            bail!("--video-wait-timeout must be between 1 and 1440 minutes");
+        }
+        let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+        if api_key.is_empty() && !(video_provider == VideoProvider::Local && cli.from.is_some()) {
+            bail!("OPENROUTER_API_KEY is not set; only a local-video --from resume with all hosted assets already present can run without it");
+        }
 
         let quality = cli
             .quality
@@ -403,22 +481,77 @@ impl Config {
                 "REELMAESTRO_MUSIC_MODEL",
                 "google/lyria-3-pro-preview",
             ),
-            video_model: pick(
-                &cli.video_model,
-                "REELMAESTRO_VIDEO_MODEL",
-                tier_video_model,
-            ),
+            video_model: if video_provider == VideoProvider::Local {
+                let explicit = cli
+                    .video_model
+                    .clone()
+                    .or_else(|| std::env::var("REELMAESTRO_VIDEO_MODEL").ok());
+                if let Some(model) = explicit {
+                    if model != "local/minimax-h3" {
+                        bail!("local video provider requires --video-model local/minimax-h3 (got {model})");
+                    }
+                }
+                "local/minimax-h3".into()
+            } else {
+                pick(
+                    &cli.video_model,
+                    "REELMAESTRO_VIDEO_MODEL",
+                    tier_video_model,
+                )
+            },
+            video_provider,
+            video_base_url: pick(
+                &cli.video_base_url,
+                "REELMAESTRO_VIDEO_BASE_URL",
+                "http://127.0.0.1:8088",
+            )
+            .trim_end_matches('/')
+            .to_string(),
+            video_api_token: std::env::var("REELMAESTRO_VIDEO_API_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("H3_STUDIO_KEY").ok()),
+            video_input_mode,
+            video_seed,
+            video_steps: match (
+                cli.video_steps,
+                std::env::var("REELMAESTRO_VIDEO_STEPS").ok(),
+            ) {
+                (Some(value), _) => value,
+                (None, Some(value)) => value.parse().map_err(|_| {
+                    anyhow::anyhow!("invalid REELMAESTRO_VIDEO_STEPS; expected an integer")
+                })?,
+                (None, None) => 50,
+            },
+            video_wait_timeout,
+            video_size_explicit: cli.video_size.is_some()
+                || std::env::var("REELMAESTRO_VIDEO_SIZE").is_ok(),
             video_model_explicit: cli.video_model.is_some()
                 || std::env::var("REELMAESTRO_VIDEO_MODEL").is_ok(),
             voice: cli
                 .voice
                 .clone()
                 .or_else(|| std::env::var("REELMAESTRO_VOICE").ok()),
-            video_resolution: normalize_video_resolution(pick(
-                &cli.video_resolution,
-                "REELMAESTRO_VIDEO_RESOLUTION",
-                tier.video_resolution,
-            ))?,
+            video_resolution: if video_provider == VideoProvider::Local {
+                if cli.video_resolution.is_some()
+                    || std::env::var("REELMAESTRO_VIDEO_RESOLUTION").is_ok()
+                {
+                    bail!("--video-resolution/REELMAESTRO_VIDEO_RESOLUTION is not supported by local H3; exact size is selected from the output format");
+                }
+                let default = match format {
+                    Format::Reel => "544x960",
+                    Format::Youtube => "960x544",
+                };
+                pick(&cli.video_size, "REELMAESTRO_VIDEO_SIZE", default)
+            } else {
+                if cli.video_size.is_some() || std::env::var("REELMAESTRO_VIDEO_SIZE").is_ok() {
+                    bail!("--video-size/REELMAESTRO_VIDEO_SIZE is only valid with --video-provider local");
+                }
+                normalize_video_resolution(pick(
+                    &cli.video_resolution,
+                    "REELMAESTRO_VIDEO_RESOLUTION",
+                    tier.video_resolution,
+                ))?
+            },
             validate_scene: cli
                 .validate_scene
                 .or_else(|| {

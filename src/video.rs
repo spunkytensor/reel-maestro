@@ -1,13 +1,19 @@
 // Copyright 2026 Spunky Tensor
 // SPDX-License-Identifier: Apache-2.0
 
-//! Optional AI-generated video scenes (image-to-video via Veo). Each chosen scene's still
-//! is animated into a short clip; failures fall back to `None` so the scene stays a still.
+//! Optional AI-generated video scenes via OpenRouter or the private local H3 provider.
+//! Selected scenes become clips; failures fall back to `None` so the scene stays a still.
+
+mod local;
+
+pub use local::preflight_local;
+use local::{generate_local_clip, LocalOutcome};
 
 use std::path::{Path, PathBuf};
 
 use futures::stream::{self, StreamExt};
 
+use crate::config::{Config, VideoInputMode, VideoProvider};
 use crate::images;
 use crate::model::{Entity, Scene};
 use crate::openrouter::{self, OpenRouter};
@@ -45,10 +51,52 @@ pub async fn generate(
     video_count: usize,
     resolution: &str,
     dir: &Path,
+    cfg: &Config,
 ) -> Vec<Option<PathBuf>> {
     // Only the first `video_count` scenes get animated; the rest remain stills. `min` guards
     // against a caller asking for more clips than there are scenes.
     let jobs: Vec<usize> = (0..video_count.min(scenes.len())).collect();
+
+    if cfg.video_provider == VideoProvider::Local {
+        let mut out: Vec<Option<PathBuf>> = (0..scenes.len())
+            .map(|i| {
+                let path = dir.join(format!("scene-{i:02}.mp4"));
+                (i < video_count && path.exists()).then_some(path)
+            })
+            .collect();
+        for i in jobs {
+            let path = dir.join(format!("scene-{i:02}.mp4"));
+            if path.exists() {
+                println!("  scene {i}: reusing existing clip");
+                out[i] = Some(path);
+                continue;
+            }
+            let prompt = match cfg.video_input_mode {
+                VideoInputMode::FirstFrame => build_video_prompt(&scenes[i], characters, locations),
+                VideoInputMode::Text => format!(
+                    "{}. {} One continuous shot, natural movement, no speech, no overlaid text.",
+                    scenes[i].image_prompt, scenes[i].motion_prompt
+                ),
+            };
+            let duration = snap_duration(&or.video_model, durations[i]);
+            if durations[i] > 10.0 {
+                eprintln!("  scene {i}: {:.1}s exceeds H3's longest requested clip; assembly will retime the 10s clip", durations[i]);
+            }
+            match generate_local_clip(cfg, i, &prompt, &images[i], duration, resolution, dir).await
+            {
+                Ok(LocalOutcome::Complete(path)) => out[i] = Some(path),
+                Ok(LocalOutcome::Pending(message)) => {
+                    eprintln!("  scene {i}: {message}; stopping local submissions so only one job remains outstanding");
+                    break;
+                }
+                Err(error) => {
+                    eprintln!("  scene {i}: local video failed ({error:#}); stopping submissions to avoid multiple possibly outstanding jobs");
+                    break;
+                }
+            }
+        }
+        return out;
+    }
 
     // Veo's negativePrompt rides a Veo-specific provider passthrough; skip it entirely for a
     // non-Veo --video-model override rather than send a field its provider never defined.
@@ -221,7 +269,9 @@ pub enum ClipLengths {
 /// Per-model clip-length capability (July 2026 OpenRouter catalog). Unknown models get Veo's
 /// conservative discrete set — every provider in the catalog accepts those lengths.
 pub fn clip_lengths(model: &str) -> ClipLengths {
-    if model.contains("wan-2.6") || model.contains("seedance") {
+    if model == "local/minimax-h3" {
+        ClipLengths::Discrete(&[5, 10])
+    } else if model.contains("wan-2.6") || model.contains("seedance") {
         ClipLengths::Range { min: 2, max: 15 }
     } else if model.contains("kling") {
         ClipLengths::Range { min: 3, max: 15 }
@@ -298,6 +348,15 @@ mod tests {
         assert_eq!(snap_duration("kwaivgi/kling-v3.0-std", 1.0), 3);
         // Unknown models fall back to the conservative Veo set.
         assert_eq!(snap_duration("someone/other-video", 5.0), 6);
+    }
+
+    #[test]
+    fn local_h3_uses_its_discovered_duration_family() {
+        const H3: &str = "local/minimax-h3";
+        assert_eq!(snap_duration(H3, 0.0), 5);
+        assert_eq!(snap_duration(H3, 5.0), 5);
+        assert_eq!(snap_duration(H3, 5.1), 10);
+        assert_eq!(snap_duration(H3, 30.0), 10);
     }
 
     #[test]
