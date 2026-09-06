@@ -36,16 +36,22 @@ fn local_http() -> Result<reqwest::Client> {
         .build()?)
 }
 
-fn local_token(cfg: &Config) -> Result<&str> {
-    cfg.video_api_token.as_deref().filter(|v| !v.is_empty()).ok_or_else(|| {
-        anyhow!("local video authentication is missing; set REELMAESTRO_VIDEO_API_TOKEN (or H3_STUDIO_KEY)")
-    })
+fn local_token(cfg: &Config) -> &str {
+    cfg.video_api_token.as_deref().unwrap_or_default()
+}
+
+// Authentication validation returns no credential-bearing value through the error/result path.
+fn validate_local_auth(cfg: &Config) -> Result<()> {
+    if local_token(cfg).is_empty() {
+        bail!("local video authentication is missing; set REELMAESTRO_VIDEO_API_TOKEN (or H3_STUDIO_KEY)");
+    }
+    Ok(())
 }
 
 async fn local_json(cfg: &Config, path: &str) -> Result<Value> {
     let response = local_http()?
         .get(format!("{}{path}", cfg.video_base_url))
-        .bearer_auth(local_token(cfg)?)
+        .bearer_auth(local_token(cfg))
         .send()
         .await?;
     let status = response.status();
@@ -62,6 +68,7 @@ async fn local_json(cfg: &Config, path: &str) -> Result<Value> {
 /// Fail before any fresh paid pipeline stage if the configured local service is unavailable or
 /// does not advertise the exact contract Reel Maestro will use.
 pub async fn preflight_local(cfg: &Config) -> Result<()> {
+    validate_local_auth(cfg)?;
     let base = reqwest::Url::parse(&cfg.video_base_url)?;
     if !matches!(base.scheme(), "http" | "https")
         || base.host_str().is_none()
@@ -120,7 +127,8 @@ pub async fn preflight_local(cfg: &Config) -> Result<()> {
 #[derive(Debug)]
 pub(super) enum LocalOutcome {
     Complete(PathBuf),
-    Pending(String),
+    // Only fixed diagnostic text crosses the logging boundary, never authenticated responses.
+    Pending(&'static str),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -178,6 +186,7 @@ pub(super) async fn generate_local_clip(
     size: &str,
     dir: &Path,
 ) -> Result<LocalOutcome> {
+    validate_local_auth(cfg)?;
     let manifest_path = dir.join(format!("scene-{scene:02}.video-job.json"));
     let image_bytes = if cfg.video_input_mode == VideoInputMode::FirstFrame {
         Some(std::fs::read(image)?)
@@ -213,7 +222,7 @@ pub(super) async fn generate_local_clip(
             };
             let response = local_http()?
                 .post(format!("{}/api/v1/videos/images", cfg.video_base_url))
-                .bearer_auth(local_token(cfg)?)
+                .bearer_auth(local_token(cfg))
                 .header("content-type", mime)
                 .body(bytes)
                 .send()
@@ -270,7 +279,7 @@ pub(super) async fn generate_local_clip(
         // Repeating this POST after an uncertain transport result reconciles the same durable key.
         let response = local_http()?
             .post(format!("{}/api/v1/videos", cfg.video_base_url))
-            .bearer_auth(local_token(cfg)?)
+            .bearer_auth(local_token(cfg))
             .header("Idempotency-Key", &manifest.idempotency_key)
             .json(&manifest.request)
             .send()
@@ -280,16 +289,15 @@ pub(super) async fn generate_local_clip(
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+            .and_then(|v| v.parse::<u64>().ok());
         let value: Value = response.json().await?;
         if status.as_u16() == 429 {
             manifest.status = Some("submission_throttled".into());
+            manifest.metadata = json!({"retry_after_seconds": retry_after});
             atomic_json(&manifest_path, &manifest)?;
-            return Ok(LocalOutcome::Pending(format!(
-                "submission throttled (Retry-After: {}) using durable key {}",
-                retry_after.as_deref().unwrap_or("unspecified"),
-                manifest.idempotency_key
-            )));
+            return Ok(LocalOutcome::Pending(
+                "submission throttled; consult the manifest's retry_after_seconds and resume using the same key",
+            ));
         }
         if !status.is_success() {
             bail!("local H3 submission failed ({status}): {value}");
@@ -319,7 +327,7 @@ pub(super) async fn generate_local_clip(
     loop {
         let response = match local_http()?
             .get(&poll)
-            .bearer_auth(local_token(cfg)?)
+            .bearer_auth(local_token(cfg))
             .send()
             .await
         {
@@ -327,7 +335,7 @@ pub(super) async fn generate_local_clip(
             Err(_) => {
                 if Instant::now() >= deadline {
                     return Ok(LocalOutcome::Pending(
-                        "polling connection unavailable; accepted job retained for resume".into(),
+                        "polling connection unavailable; accepted job retained for resume",
                     ));
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -346,9 +354,11 @@ pub(super) async fn generate_local_clip(
             if Duration::from_secs(retry_after)
                 >= deadline.saturating_duration_since(Instant::now())
             {
-                return Ok(LocalOutcome::Pending(format!(
-                    "polling delayed by {status}; retry after {retry_after}s with the same run folder"
-                )));
+                manifest.metadata = json!({"retry_after_seconds": retry_after});
+                atomic_json(&manifest_path, &manifest)?;
+                return Ok(LocalOutcome::Pending(
+                    "polling delayed beyond the wait budget; consult retry_after_seconds in the manifest and resume",
+                ));
             }
             tokio::time::sleep(Duration::from_secs(retry_after)).await;
             continue;
@@ -361,7 +371,7 @@ pub(super) async fn generate_local_clip(
             Err(_) => {
                 if Instant::now() >= deadline {
                     return Ok(LocalOutcome::Pending(
-                        "invalid polling response; accepted job retained for resume".into(),
+                        "invalid polling response; accepted job retained for resume",
                     ));
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -397,7 +407,7 @@ pub(super) async fn generate_local_clip(
                 let temp = dir.join(format!(".scene-{scene:02}.mp4.tmp"));
                 let response = local_http()?
                     .get(content)
-                    .bearer_auth(local_token(cfg)?)
+                    .bearer_auth(local_token(cfg))
                     .send()
                     .await?;
                 if !response.status().is_success() {
@@ -421,10 +431,9 @@ pub(super) async fn generate_local_clip(
                 );
             }
             _ if Instant::now() >= deadline => {
-                return Ok(LocalOutcome::Pending(format!(
-                    "accepted job {} is still pending (resume with the same run folder)",
-                    manifest.job_id.as_deref().unwrap_or("unknown")
-                )))
+                return Ok(LocalOutcome::Pending(
+                    "accepted job is still pending; its ID is retained in the manifest (resume with the same run folder)",
+                ))
             }
             _ => tokio::time::sleep(Duration::from_secs(5)).await,
         }

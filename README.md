@@ -316,6 +316,8 @@ Reel Maestro checks authenticated health and `/api/v1/videos/models` before fres
 requires `local/minimax-h3`, and uses exact native sizes: 544x960 for reels and 960x544 for
 YouTube. Local mode rejects `--video-resolution`, uses discovered 5/10-second durations, and is
 $0 metered. It never falls back, downgrades, or rerolls through a hosted video provider.
+Local model IDs and local-only CLI controls require `--video-provider local`; they cannot
+silently retain the paid hosted default.
 
 Scenes run sequentially. First-frame mode uploads the still as authenticated binary data; text
 mode omits it. Requests select original export, `generate_audio=false`, and no negative prompt.

@@ -94,3 +94,17 @@ fn missing_poster_cannot_accidentally_start_hosted_generation_without_key() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("poster"));
 }
+
+#[test]
+fn local_options_without_provider_never_use_hosted_default() {
+    let fixture = Fixture::new();
+    for flags in [
+        ["--video-model", "local/minimax-h3"],
+        ["--video-base-url", "http://127.0.0.1:8088"],
+        ["--video-input-mode", "text"],
+    ] {
+        let out = fixture.run(&flags, &[]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("refusing to use the hosted default"));
+    }
+}

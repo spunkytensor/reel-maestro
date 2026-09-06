@@ -371,6 +371,23 @@ impl Config {
                 bail!("invalid REELMAESTRO_VIDEO_PROVIDER={value:?}; expected local or openrouter")
             }
         };
+        // Local-looking options must never silently retain the paid hosted default.
+        let requested_video_model = cli
+            .video_model
+            .clone()
+            .or_else(|| std::env::var("REELMAESTRO_VIDEO_MODEL").ok());
+        if video_provider == VideoProvider::Openrouter
+            && (requested_video_model
+                .as_deref()
+                .is_some_and(|model| model.starts_with("local/"))
+                || cli.video_base_url.is_some()
+                || cli.video_input_mode.is_some()
+                || cli.video_seed.is_some()
+                || cli.video_steps.is_some()
+                || cli.video_wait_timeout.is_some())
+        {
+            bail!("local video model/options require --video-provider local; refusing to use the hosted default");
+        }
         let input_mode_env = std::env::var("REELMAESTRO_VIDEO_INPUT_MODE").ok();
         let video_input_mode = match (cli.video_input_mode, input_mode_env.as_deref()) {
             (Some(mode), _) => mode,
