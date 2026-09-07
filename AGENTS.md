@@ -53,6 +53,11 @@ cargo test video_mode_smoke -- --ignored --nocapture
 - `src/transcribe.rs`, `src/captions.rs` — local timing and ASS caption generation.
 - `src/ffmpeg.rs`, `src/assemble.rs` — local render, muxing, poster, and smoke tests.
 
+## Studio design
+
+UI work for Reel Maestro Studio (planned under `studio/web/`) must follow
+`docs/design/DESIGN_GUIDE.md`; the approved mockups it describes are in `docs/design/`.
+
 ## Documentation expectations
 
 When user-facing flags, env vars, costs, output files, or release processes change, update

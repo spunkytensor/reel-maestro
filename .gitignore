@@ -9,6 +9,12 @@
 # Generated Reel Maestro output
 /out/
 
+# Studio dependencies, local state, and build output
+**/node_modules/
+/studio/web/dist/
+/.studio-state/
+/studio/.studio-state/
+
 # Local Python tooling for whisper-timestamped
 /.venv/
 

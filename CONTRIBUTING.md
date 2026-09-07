@@ -91,6 +91,44 @@ mv reelmaestro-sbom.json target/security/reelmaestro-sbom.cdx.json
 - Use `REELMAESTRO_*` for Reel Maestro-specific environment variables.
 - Keep generated artifacts under `out/` or the system temp directory.
 
+## Studio development
+
+Studio requires Node.js 22.13+ in addition to the CLI media tools. See
+[`studio/README.md`](studio/README.md) for local startup, storage, and current limitations.
+
+```sh
+cargo build --locked
+npm --prefix studio ci
+npm --prefix studio run build
+npm --prefix studio test
+npm --prefix studio run test:browser
+npm --prefix studio run format
+npm --prefix studio run format:check
+npm --prefix studio audit
+```
+
+The browser suite needs Chromium (`CHROME` can select an installed executable, or run
+`npm --prefix studio exec -- playwright-core install --with-deps chromium`). It starts a temporary
+server, uses mock paid generation plus the real credential-free Rust revision engine and local ffmpeg fixtures, and retains screenshots under
+`out/studio-verification/`. Inspect screenshots against `docs/design/` when changing visual UI.
+Studio CI runs TypeScript, backend/browser tests, formatting, and npm dependency auditing alongside
+the unchanged Rust checks. Never replace the fixture executable with a paid provider in CI.
+
+`reelmaestro --studio-schema` reports the version-1 CLI argument inventory and availability;
+`reelmaestro --studio-estimate` emits a version-1 fresh-generation cost estimate without an API
+key or paid calls. Rust remains the authority for estimates/configuration. `--studio-inspect-run`
+returns normalized stable scene IDs and a source fingerprint. `--revision-plan` consumes a versioned
+request and returns a complete dependency/cost plan; `--revision-execute` and `--revision-recover`
+require the exact persisted plan plus `--approval-hash`. `--events-json` emits structured NDJSON.
+Revision tests cover stale/tampered inputs, copied artifact hashes, immutable publication, and
+refusal to retry ambiguous paid work. Keep these contracts and browser validators in sync.
+`--no-dotenv` disables both local and ancestor `.env` discovery; Studio always passes it so that
+unapproved host-side environment-file changes cannot affect a submitted job.
+
+Container build, network-disabled fixture render, readiness, dependency scan, and backup checks
+are documented in [`docs/container.md`](docs/container.md). Never run live provider calls as a
+substitute for offline verification without explicit authorization.
+
 ## Pull request expectations
 
 1. Explain the user-facing change and why it is needed.

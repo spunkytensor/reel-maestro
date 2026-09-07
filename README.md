@@ -11,12 +11,47 @@ Reel Maestro is a small, single-binary Rust CLI that turns an idea into a video 
 **AI-generated narration audio, images, and burned-in captions** — all through a single
 **OpenRouter API key**. It makes both vertical (9:16) TikTok/Reels/Shorts reels and, with
 `--format youtube`, landscape (16:9) long-form YouTube videos with a chaptered script and
-pastable metadata. No Docker, no server, no dashboard.
+pastable metadata. The native CLI needs no Docker or server. An optional local browser interface,
+[Reel Maestro Studio](studio/README.md), provides approved generation, scene editing/selective
+regeneration, immutable versions, uploads, playback, and MP4 exports. A self-contained
+[Docker installation](docs/container.md) includes the CLI, Studio, and local media dependencies.
 
 This project is open source under the [Apache License 2.0](LICENSE). Contributions are
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
 
 See https://www.youtube.com/@ReelMaestroSamples for examples of reels created with this project, including sample prompts.
+
+## Launch Studio
+
+Install Docker Engine (or Docker Desktop) with Docker Compose, then run from this checkout:
+
+```sh
+./run.sh
+# Open http://localhost:3001
+```
+
+The launcher builds the services in `compose.yaml`, starts Studio, and waits for readiness.
+The image includes the Rust CLI, Node server, Whisper with its base model, and ffmpeg/ffprobe;
+no host Python, Rust, Node, or media-tool installation is required. Videos are saved in host `./out`.
+Docker defaults to port 3001 to avoid common port-3000 services. Use `REELMAESTRO_PORT=3300 ./run.sh`
+to choose another port (an explicit port in `.env` takes precedence).
+
+```sh
+./run.sh cli --help
+./run.sh whisper --help
+./run.sh ffmpeg -version
+./run.sh ffprobe -version
+./run.sh status
+./stop.sh                 # Clean shutdown; preserves volumes and data
+```
+
+`run.sh` loads and exports the repository `.env` when present; Compose passes its values into
+the containers at runtime, including `OPENROUTER_API_KEY`. The file is never baked into the image.
+Use Docker Compose 2.24 or newer. See [runtime credentials and container operations](docs/container.md)
+and [native Studio startup](studio/README.md#run-locally). The default Docker port is loopback-only,
+not an authenticated public service.
+
+![Reel Maestro Studio in dark mode showing an espresso video, scene list, and timeline](docs/studio-screenshot.png)
 
 ## How it works
 
@@ -371,7 +406,7 @@ clip and fits it to narration. Long scene windows may stretch the longest suppor
 Original output is scaled by Reel Maestro; H3's padded landscape `1080p` export is not requested.
 The job manifest retains provider provenance/measurements; disclose AI generation when sharing.
 
-This adapter targets the [local H3 service contract](https://github.com/mattcurf/minimax-h3).
+This adapter targets a separately provisioned local video-generation service with a compatible API.
 Provision it separately and comply with the model license or your separate grant; Reel Maestro
 does not download weights or confer model-use rights. The recorded setup uses a 32 GB RTX 5090
 and substantial host RAM (some reference tests exceeded 200 GiB). Advertised profiles are not

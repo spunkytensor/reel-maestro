@@ -1,0 +1,58 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Materials — Reel Maestro Studio</title><link rel="stylesheet" href="studio.css">
+<style>
+body { overflow: auto; padding: 32px; background: #E4E6EA; } body::before { display: none; }
+.theme-dark { color-scheme: dark; --canvas: #0C0E12; --ink-1: rgba(242,243,245,.92); --ink-2: rgba(242,243,245,.6); --ink-3: rgba(242,243,245,.38); --hair: rgba(242,243,245,.10); --fill: rgba(242,243,245,.07); --fill-2: rgba(242,243,245,.12); --glass: rgba(255,255,255,.08); --glass-el: rgba(26,29,36,.7); --edge-top: rgba(255,255,255,.38); --edge-bot: rgba(255,255,255,.06); --el-shadow: 0 20px 60px rgba(0,0,0,.35); --field: rgba(255,255,255,.08); --on-glass-pill: rgba(255,255,255,.14); --accent: #FF7A33; --accent-2: #FFB176; --ok: #5CC98A; --warn: #E2B23C; --err: #FF7B6E; --blob-1: rgba(80,110,255,.34); --blob-2: rgba(255,130,70,.2); --blob-3: rgba(150,100,255,.28); }
+.head { max-width: 1376px; margin: 0 auto 20px; color: #16181D; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 1376px; margin: 0 auto; }
+.pane { position: relative; overflow: hidden; border-radius: 28px; padding: 28px; background: var(--canvas); color: var(--ink-1); }
+.pane::before { content: ""; position: absolute; inset: -12%; filter: blur(48px); background: radial-gradient(38% 42% at 14% 12%, var(--blob-1), transparent 72%), radial-gradient(34% 40% at 88% 18%, var(--blob-2), transparent 72%), radial-gradient(46% 46% at 55% 100%, var(--blob-3), transparent 72%); }
+.pane > * { position: relative; }
+.lbl { font-size: .875rem; font-weight: 500; color: var(--ink-2); margin: 24px 0 10px; }
+.mats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.mat { height: 96px; border-radius: 20px; padding: 14px; display: flex; flex-direction: column; justify-content: flex-end; font-size: .8125rem; }
+.mat.canvas { background: var(--canvas); box-shadow: inset 0 0 0 1px var(--hair); }
+.mat.ink { background: var(--ink-1); color: var(--canvas); }
+.mat b { display: block; font-weight: 600; } .mat span { opacity: .7; }
+.type > div { display: flex; align-items: baseline; gap: 16px; padding: 5px 0; }
+.type .m { width: 190px; flex: none; font-family: "JetBrains Mono", monospace; font-size: .75rem; color: var(--ink-3); }
+.demo { position: relative; height: 150px; border-radius: 20px; overflow: hidden; }
+.demo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.demo .bar2 { position: absolute; left: 16px; right: 16px; bottom: 14px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; border-radius: 20px; }
+.sw { display: flex; gap: 10px; flex-wrap: wrap; }
+.sw div { width: 96px; height: 56px; border-radius: 14px; font-size: .6875rem; padding: 6px 8px; display: flex; align-items: flex-end; font-family: "JetBrains Mono", monospace; }
+</style></head>
+<body>
+<div class="head"><h1 class="title">Reel Maestro Studio · materials and tokens</h1><p class="body ink-2" style="color:rgba(22,24,29,.6);margin-top:6px">Four materials, one accent hue, two type families, sentence case, 8 px grid. Glass alphas change between modes; hues do not.</p></div>
+<div class="two">
+  <section class="pane theme-light">
+    <div class="row between"><h2 class="section">Light</h2><span class="caption">canvas #F5F6F8 · ink #16181D at 92 / 60 / 38%</span></div>
+    <div class="lbl">Materials</div>
+    <div class="mats"><div class="mat canvas"><b>Canvas</b><span>page, preview backing</span></div><div class="mat glass"><b>Glass</b><span>blur 24 · 55% white</span></div><div class="mat glass elevated"><b>Glass elevated</b><span>blur 40 · shadow</span></div><div class="mat ink"><b>Ink</b><span>text, icons, hairlines</span></div></div>
+    <div class="lbl">Accent · one element per view</div>
+    <div class="row" style="gap:12px"><button class="btn primary lg"><span>Generate video</span></button><button class="btn primary"><i class="fill" style="width:45%"></i><span>Applying changes · <span class="tc">2:14</span></span></button><button class="btn focus">Focus ring</button><div class="sw"><div style="background:#F26B21;color:#16181D">#F26B21</div><div style="background:#FFA45E;color:#16181D">#FFA45E</div></div></div>
+    <div class="lbl">Type · Inter, JetBrains Mono for numbers</div>
+    <div class="type"><div><span class="m">hero 3.5rem 600 -0.03</span><span class="hero">Exported</span></div><div><span class="m">title 2rem 600 -0.02</span><span class="title">Describe the video you want</span></div><div><span class="m">section 1.25rem 600</span><span class="section">Apply 3 changes</span></div><div><span class="m">body 1rem 400</span><span class="body">A topic is enough. You can also paste a link or drop in a script.</span></div><div><span class="m">label .875rem 500</span><span class="label">Scene 5</span></div><div><span class="m">caption .75rem 400</span><span class="caption">Widescreen · Version 3</span></div><div><span class="m">mono tabular</span><span class="tc">00:12.4 / 00:59.4 · $0.16 · 108 MB</span></div></div>
+    <div class="lbl">Controls · capsules on glass</div>
+    <div class="row" style="gap:12px;flex-wrap:wrap"><div class="seg"><span class="on">Widescreen</span><span>Vertical</span></div><div class="seg sm"><span class="on">Keep</span><span>Regenerate</span></div><span class="toggle on"></span><span class="toggle"></span><button class="btn">Customize</button><button class="btn quiet">Cancel</button><span class="pill ok"><span class="dot"></span>Connected</span><span class="pill warn"><span class="dot"></span>Needs attention</span><span class="pill">Waiting</span></div>
+    <div class="field" style="margin-top:12px;max-width:420px">The history of espresso</div>
+    <div class="lbl">Glass over footage · text only on a panel</div>
+    <div class="demo"><img src="assets/esp-08.jpg" alt=""><div class="glass bar2"><span class="tbtn" style="width:32px;height:32px;border-radius:999px;display:grid;place-items:center;background:var(--fill)"><svg class="i s"><use href="#i-play"/></svg></span><span class="tc">00:12.4 / 00:59.4</span><span class="grow"></span><span class="caption">Steam, pressure and the birth of espresso</span></div></div>
+  </section>
+  <section class="pane theme-dark">
+    <div class="row between"><h2 class="section">Dark</h2><span class="caption">canvas #0C0E12 · ink #F2F3F5 at 92 / 60 / 38%</span></div>
+    <div class="lbl">Materials</div>
+    <div class="mats"><div class="mat canvas"><b>Canvas</b><span>page, preview backing</span></div><div class="mat glass"><b>Glass</b><span>blur 24 · 8% white</span></div><div class="mat glass elevated"><b>Glass elevated</b><span>blur 40 · shadow</span></div><div class="mat ink"><b>Ink</b><span>text, icons, hairlines</span></div></div>
+    <div class="lbl">Accent · one element per view</div>
+    <div class="row" style="gap:12px"><button class="btn primary lg"><span>Generate video</span></button><button class="btn primary"><i class="fill" style="width:45%"></i><span>Applying changes · <span class="tc">2:14</span></span></button><button class="btn focus">Focus ring</button><div class="sw"><div style="background:#FF7A33;color:#16181D">#FF7A33</div><div style="background:#FFB176;color:#16181D">#FFB176</div></div></div>
+    <div class="lbl">Type · Inter, JetBrains Mono for numbers</div>
+    <div class="type"><div><span class="m">hero 3.5rem 600 -0.03</span><span class="hero">Exported</span></div><div><span class="m">title 2rem 600 -0.02</span><span class="title">Describe the video you want</span></div><div><span class="m">section 1.25rem 600</span><span class="section">Apply 3 changes</span></div><div><span class="m">body 1rem 400</span><span class="body">A topic is enough. You can also paste a link or drop in a script.</span></div><div><span class="m">label .875rem 500</span><span class="label">Scene 5</span></div><div><span class="m">caption .75rem 400</span><span class="caption">Widescreen · Version 3</span></div><div><span class="m">mono tabular</span><span class="tc">00:12.4 / 00:59.4 · $0.16 · 108 MB</span></div></div>
+    <div class="lbl">Controls · capsules on glass</div>
+    <div class="row" style="gap:12px;flex-wrap:wrap"><div class="seg"><span class="on">Widescreen</span><span>Vertical</span></div><div class="seg sm"><span class="on">Keep</span><span>Regenerate</span></div><span class="toggle on"></span><span class="toggle"></span><button class="btn">Customize</button><button class="btn quiet">Cancel</button><span class="pill ok"><span class="dot"></span>Connected</span><span class="pill warn"><span class="dot"></span>Needs attention</span><span class="pill">Waiting</span></div>
+    <div class="field" style="margin-top:12px;max-width:420px">The history of espresso</div>
+    <div class="lbl">Glass over footage · text only on a panel</div>
+    <div class="demo"><img src="assets/esp-08.jpg" alt=""><div class="glass bar2"><span class="tbtn" style="width:32px;height:32px;border-radius:999px;display:grid;place-items:center;background:var(--fill)"><svg class="i s"><use href="#i-play"/></svg></span><span class="tc">00:12.4 / 00:59.4</span><span class="grow"></span><span class="caption">Steam, pressure and the birth of espresso</span></div></div>
+  </section>
+</div>
+<p class="caption" style="max-width:1376px;margin:20px auto 0;color:rgba(22,24,29,.6)">Spacing 8 · 16 · 20 · 24 · 32 · 48 · 64 · Radii: bars 30, panels 24, popovers 24, tiles 20, fields 16, controls capsule · Motion only on user action, 220 ms cubic-bezier(.2,.8,.2,1), instant with reduced motion · Focus: 2 px accent outline, 2 px offset · Touch targets 44 px.</p>
+<script src="shell.js"></script>
+</body></html>

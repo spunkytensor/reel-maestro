@@ -36,7 +36,7 @@ const NEGATIVE_PROMPT: &str = "text, captions, subtitles, watermark, logo, morph
 const DEFAULT_MOTION: &str =
     "Animate this image with subtle, natural motion and a slow, gentle camera move.";
 
-/// Animate the first `video_count` scenes into clips. Returns a per-scene vector aligned to
+/// Animate the selected scene indices into clips. Returns a per-scene vector aligned to
 /// `scenes`: `Some(clip path)` where a clip was produced, `None` where the scene should stay
 /// a Ken Burns still (either not selected, or generation failed).
 // Mirrors `images::generate`: one call site, loosely-related pipeline inputs.
@@ -48,20 +48,23 @@ pub async fn generate(
     locations: &[Entity],
     images: &[PathBuf],
     durations: &[f64],
-    video_count: usize,
+    selected: &[usize],
     resolution: &str,
     dir: &Path,
     cfg: &Config,
 ) -> Vec<Option<PathBuf>> {
-    // Only the first `video_count` scenes get animated; the rest remain stills. `min` guards
-    // against a caller asking for more clips than there are scenes.
-    let jobs: Vec<usize> = (0..video_count.min(scenes.len())).collect();
+    let jobs: Vec<usize> = selected
+        .iter()
+        .copied()
+        .filter(|&index| index < scenes.len())
+        .collect();
+    let selected: std::collections::HashSet<usize> = jobs.iter().copied().collect();
 
     if cfg.video_provider == VideoProvider::Local {
         let mut out: Vec<Option<PathBuf>> = (0..scenes.len())
             .map(|i| {
                 let path = dir.join(format!("scene-{i:02}.mp4"));
-                (i < video_count && path.exists()).then_some(path)
+                (selected.contains(&i) && path.exists()).then_some(path)
             })
             .collect();
         for i in jobs {

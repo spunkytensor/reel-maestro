@@ -9,6 +9,8 @@
 //! `script.json` / `words.json` can be written once and re-read on `--from` resume.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// A single word with its spoken time window, from speech-to-text.
 ///
@@ -29,7 +31,7 @@ pub struct WordTiming {
 /// `id` is a short slug the scenes reference; `description` is a fully-specified canonical visual
 /// spec (worn up/down, sleeve length, decor, palette, …) reused verbatim everywhere it appears,
 /// so the model can't free-fill the unspecified bits differently each time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entity {
     /// Short, stable slug (e.g. `"man"`, `"date"`, `"restaurant"`) that scenes reference.
     pub id: String,
@@ -38,8 +40,11 @@ pub struct Entity {
 }
 
 /// One visual beat: a slice of narration and the image to show during it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scene {
+    /// Stable identity of this visual beat across reordering and immutable revisions.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     /// The portion of the narration this scene covers (used to find its time window).
     pub line: String,
     /// A vivid, vertical-friendly prompt for the image generator.
@@ -76,7 +81,7 @@ pub struct Scene {
 /// One chapter of a long-form (youtube-format) video: a titled span of the flat
 /// [`Script::scenes`] list plus the narration it covers. Chapters drive per-chapter TTS,
 /// chunked rendering, and the YouTube chapter timestamps in `youtube.md`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chapter {
     /// Short chapter title (shown as a YouTube chapter marker).
     pub title: String,
@@ -96,7 +101,7 @@ pub struct Chapter {
 ///
 /// This is the LLM's structured output and the single source of truth for the rest of the run:
 /// it is serialized to `script.json` so a run can be resumed without re-calling the model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Script {
     /// Short human title; also slugified into the run folder name.
     pub title: String,
@@ -151,6 +156,33 @@ pub struct Script {
 }
 
 impl Script {
+    /// Assign deterministic IDs to scenes imported from the legacy index-only format. Existing
+    /// IDs are never changed. Duplicate legacy scenes receive deterministic occurrence suffixes.
+    pub fn ensure_scene_ids(&mut self) {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for scene in &mut self.scenes {
+            if !scene.id.trim().is_empty() {
+                continue;
+            }
+            let input = serde_json::json!({
+                "line": scene.line,
+                "image_prompt": scene.image_prompt,
+                "cast_ids": scene.cast_ids,
+                "location_id": scene.location_id,
+                "motion_prompt": scene.motion_prompt,
+            });
+            let digest = Sha256::digest(serde_json::to_vec(&input).expect("scene is serializable"));
+            let base = format!("scene-{}", hex_prefix(&digest, 16));
+            let occurrence = seen.entry(base.clone()).or_default();
+            scene.id = if *occurrence == 0 {
+                base
+            } else {
+                format!("{base}-{}", *occurrence + 1)
+            };
+            *occurrence += 1;
+        }
+    }
+
     /// Fold a legacy `cast` string (older `script.json`) into `characters` so pre-multi-character
     /// runs behave like a single recurring character. No-op once `characters` is populated.
     pub fn normalize_entities(&mut self) {
@@ -163,9 +195,18 @@ impl Script {
     }
 }
 
+fn hex_prefix(bytes: &[u8], chars: usize) -> String {
+    bytes
+        .iter()
+        .flat_map(|byte| [byte >> 4, byte & 0x0f])
+        .take(chars)
+        .map(|nibble| char::from_digit(nibble.into(), 16).unwrap())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::WordTiming;
+    use super::{Scene, Script, WordTiming};
 
     #[test]
     fn words_json_requires_valid_word_timings_and_round_trips() {
@@ -178,5 +219,37 @@ mod tests {
         assert_eq!(serde_json::to_vec(&words).unwrap(), valid);
 
         assert!(serde_json::from_slice::<Vec<WordTiming>>(br#"not json"#).is_err());
+    }
+
+    #[test]
+    fn legacy_scene_ids_are_cryptographic_deterministic_and_persisted() {
+        let scene = Scene {
+            id: String::new(),
+            line: "hello world".into(),
+            image_prompt: "a sunrise".into(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: String::new(),
+            motion_prompt: String::new(),
+        };
+        let mut script: Script = serde_json::from_value(serde_json::json!({
+            "title":"test", "narration":"hello world hello world", "scenes":[scene.clone(), scene],
+            "music_prompt":""
+        }))
+        .unwrap();
+        script.ensure_scene_ids();
+        assert!(script.scenes[0].id.starts_with("scene-"));
+        assert_eq!(script.scenes[0].id.len(), "scene-".len() + 16);
+        assert_eq!(script.scenes[1].id, format!("{}-2", script.scenes[0].id));
+        let ids: Vec<_> = script.scenes.iter().map(|scene| scene.id.clone()).collect();
+        script.ensure_scene_ids();
+        assert_eq!(
+            ids,
+            script
+                .scenes
+                .iter()
+                .map(|scene| scene.id.clone())
+                .collect::<Vec<_>>()
+        );
     }
 }

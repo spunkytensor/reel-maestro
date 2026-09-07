@@ -1,7 +1,6 @@
 // Copyright 2026 Spunky Tensor
 // SPDX-License-Identifier: Apache-2.0
 
-use std::hash::{Hash, Hasher};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::config::{Config, VideoInputMode};
 
@@ -245,6 +245,24 @@ fn same_origin(cfg: &Config, url: &str) -> Result<String> {
     Ok(parsed.to_string())
 }
 
+fn local_fingerprint(
+    cfg: &Config,
+    prompt: &str,
+    duration: u32,
+    size: &str,
+    image: Option<&[u8]>,
+) -> Result<String> {
+    Ok(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&json!({
+            "input_mode": format!("{:?}", cfg.video_input_mode),
+            "model": "local/minimax-h3", "prompt": prompt, "duration": duration,
+            "size": size, "seed": cfg.video_seed, "steps": cfg.video_steps,
+            "image_sha256": image.map(Sha256::digest).map(|value| format!("{value:x}"))
+        }))?)
+    ))
+}
+
 pub(super) async fn generate_local_clip(
     cfg: &Config,
     scene: usize,
@@ -261,16 +279,7 @@ pub(super) async fn generate_local_clip(
     } else {
         None
     };
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    cfg.video_input_mode.hash(&mut hasher);
-    "local/minimax-h3".hash(&mut hasher);
-    prompt.hash(&mut hasher);
-    duration.hash(&mut hasher);
-    size.hash(&mut hasher);
-    cfg.video_seed.hash(&mut hasher);
-    cfg.video_steps.hash(&mut hasher);
-    image_bytes.hash(&mut hasher);
-    let fingerprint = format!("{:016x}", hasher.finish());
+    let fingerprint = local_fingerprint(cfg, prompt, duration, size, image_bytes.as_deref())?;
     let mut manifest: LocalManifest = if manifest_path.exists() {
         let stored: LocalManifest = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
         if stored.input_fingerprint != fingerprint {
@@ -324,13 +333,13 @@ pub(super) async fn generate_local_clip(
                 let canonical = std::fs::canonicalize(dir)?;
                 let mut nonce = [0_u8; 16];
                 std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut nonce)?;
+                let path_hash = format!(
+                    "{:x}",
+                    Sha256::digest(canonical.to_string_lossy().as_bytes())
+                );
                 format!(
-                    "reelmaestro-{scene}-{:016x}-{}",
-                    {
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        canonical.hash(&mut h);
-                        h.finish()
-                    },
+                    "reelmaestro-{scene}-{}-{}",
+                    path_hash,
                     nonce.iter().map(|b| format!("{b:02x}")).collect::<String>()
                 )
             },
