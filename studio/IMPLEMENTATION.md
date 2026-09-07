@@ -1,7 +1,7 @@
 # Studio implementation and acceptance plan
 
-The visual authority is [the design guide](../docs/design/DESIGN_GUIDE.md); the complete
-product contract remains [STUDIO_PLAN.md](../STUDIO_PLAN.md). This checklist tracks actual
+The visual authority is [the design guide](../docs/design/DESIGN_GUIDE.md); current behavior
+is documented in [the Studio guide](README.md). This checklist tracks actual
 delivery, not mockup completion.
 
 ## Execution order

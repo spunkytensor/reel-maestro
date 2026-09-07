@@ -3,8 +3,6 @@ import type { PlanInput } from "../../shared";
 
 export type Appearance = {
   theme: "system" | "light" | "dark";
-  solid: boolean;
-  motion: boolean;
 };
 export type Defaults = Pick<PlanInput, "format" | "quality" | "maxCost">;
 
@@ -54,8 +52,6 @@ export function useAppearance() {
         value.theme === "light" || value.theme === "dark"
           ? value.theme
           : "system",
-      solid: value.solid === true,
-      motion: value.motion === true,
     };
   });
   useEffect(() => {
@@ -69,10 +65,10 @@ export function useAppearance() {
             ? "dark"
             : "light"
           : appearance.theme;
-      document.documentElement.dataset.solid =
-        appearance.solid || solid.matches ? "1" : "0";
-      document.documentElement.dataset.motion =
-        appearance.motion || motion.matches ? "reduce" : "normal";
+      document.documentElement.dataset.solid = solid.matches ? "1" : "0";
+      document.documentElement.dataset.motion = motion.matches
+        ? "reduce"
+        : "normal";
     };
     apply();
     for (const query of [dark, solid, motion])

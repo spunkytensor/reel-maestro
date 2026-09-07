@@ -10,10 +10,14 @@ not mounted or required at runtime.
 Install Docker Engine with the Compose plugin, then run from the repository root:
 
 ```sh
-mkdir -p out
-docker compose up --build -d studio
-docker compose ps
+./run.sh
+./run.sh status
 ```
+
+The launcher resolves the repository directory independently of the current working directory,
+builds every Compose service (including the CLI-profile service), and waits for Studio to become
+healthy. Use `REELMAESTRO_PORT=3300 ./run.sh` to select another free loopback port. Run
+`./run.sh stop` to stop this Compose project.
 
 Open <http://localhost:3000>. The server listens on all interfaces *inside* its container, but
 Compose publishes it only on host loopback (`127.0.0.1`) by default. This preserves the exact
@@ -21,21 +25,29 @@ Compose publishes it only on host loopback (`127.0.0.1`) by default. This preser
 local port conflict without changing the container's security checks:
 
 ```sh
-REELMAESTRO_PORT=3300 docker compose up -d studio
+REELMAESTRO_PORT=3300 ./run.sh
 # Open http://localhost:3300
 ```
 
-The Studio Settings screen accepts an OpenRouter key through its write-only API and stores it in
-the private state volume. The value is never returned by the API or written to `out`. For a
-one-off CLI invocation, pass the secret only to that container:
+Runtime provider credentials are not configured by the launcher or the Studio Settings UI. Add
+them explicitly through a Compose override when provider-backed operations are needed. For
+example, a protected override file can inject an exported host variable:
 
-```sh
-docker compose run --rm -e OPENROUTER_API_KEY cli --topic "octopus cognition"
+```yaml
+# compose.credentials.yaml (keep this file private)
+services:
+  studio:
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+  cli:
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
 ```
 
-Do not put credentials in the image or build arguments. A repository `.env` is excluded from the
-build context, but Compose itself reads `.env` for variable substitution; prefer an exported
-shell variable, a protected environment file supplied explicitly, or Studio's write-only setting.
+Set `COMPOSE_FILE=compose.yaml:compose.credentials.yaml` when invoking `run.sh`. Do not put
+credentials in the image or build arguments. Compose may read a repository `.env` for variable
+substitution, but the base `compose.yaml` does **not** inject provider keys into containers, so a
+key merely present in `.env` is not available to Studio or the CLI.
 
 ## CLI and files
 
@@ -43,9 +55,15 @@ Studio and the CLI use the same image. The working directory is `/data/out`, bac
 `./out`, so the CLI's default output and every Studio render remain visible on the host:
 
 ```sh
-docker compose run --rm cli --help
-docker compose run --rm cli --from /data/out/<run> --dry-run
+./run.sh cli --help
+./run.sh cli --from /data/out/<run> --dry-run
+./run.sh whisper --help
+./run.sh ffmpeg -version
+./run.sh ffprobe -version
 ```
+
+Arguments are passed directly to the selected executable. Start and tool commands first build
+all services from the current checkout using Docker's cache; status, stop, and help do not build.
 
 The containers run without root privileges, Linux capabilities, privilege escalation, a Docker
 socket, or host source/tool directories. The default image user is UID/GID 1000. On Linux, build

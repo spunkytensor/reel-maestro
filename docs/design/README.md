@@ -1,6 +1,6 @@
 # Reel Maestro Studio — design mockups
 
-Static design mockups for the Studio described in [`STUDIO_PLAN.md`](../../STUDIO_PLAN.md).
+Static design mockups for [Reel Maestro Studio](../../studio/README.md).
 They follow a Liquid Glass design guideline: four materials (Canvas, Glass, Glass Elevated, Ink),
 one accent hue used once per view, Inter for UI and JetBrains Mono for numbers, sentence case,
 8 px grid, progressive disclosure behind "Customize", and one verb-object primary action per screen.

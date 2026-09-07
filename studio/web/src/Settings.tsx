@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Settings as SettingsData } from "../../shared";
-import { api, errorMessage } from "./api";
+import { errorMessage } from "./api";
 import {
   formats,
   Item,
@@ -8,7 +8,6 @@ import {
   Overlay,
   qualities,
   Segmented,
-  Toggle,
 } from "./components";
 import {
   persist,
@@ -31,12 +30,9 @@ export function Settings({
   scanning: boolean;
 }) {
   const [defaults, setDefaults] = useState<Defaults>(readDefaults);
-  const [keyOpen, setKeyOpen] = useState(false);
   const [info, setInfo] = useState<"help" | "licenses">();
-  const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
   function update(value: Partial<Defaults>) {
     const next = { ...defaults, ...value };
     setDefaults(next);
@@ -56,24 +52,6 @@ export function Settings({
       setError(
         "Appearance changed for this visit, but your browser could not remember it.",
       );
-  }
-  async function connect() {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api("/settings", { apiKey: apiKey.trim() });
-      setApiKey("");
-      setKeyOpen(false);
-      await onRefresh();
-      setMessage(
-        "Your key was stored privately. No paid connection test was made.",
-      );
-    } catch (error) {
-      setError(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
   }
   return (
     <main id="main" className="page settings-page">
@@ -96,46 +74,11 @@ export function Settings({
                 onChange={(theme) => appearanceChange({ theme })}
               />
             </Item>
-            <Item label="Reduce transparency" caption="Solid panels, no blur">
-              <Toggle
-                label="Reduce transparency"
-                checked={appearance.solid}
-                onChange={(solid) => appearanceChange({ solid })}
-              />
-            </Item>
-            <Item
-              label="Reduce motion"
-              caption="Your device preference is always respected"
-            >
-              <Toggle
-                label="Reduce motion"
-                checked={appearance.motion}
-                onChange={(motion) => appearanceChange({ motion })}
-              />
-            </Item>
           </div>
         </section>
         <section className="glass group">
           <h2 className="section">Generation</h2>
           <div className="list">
-            <Item
-              label="AI provider"
-              caption="Keys are write-only. Status indicates configuration, not a connection test."
-            >
-              <div className="key-status">
-                <span
-                  className={`pill ${settings?.providerConnected ? "ok" : "warn"}`}
-                >
-                  <span className="dot" />
-                  {settings?.providerConnected
-                    ? "Key configured"
-                    : "Not connected"}
-                </span>
-                <button className="btn quiet" onClick={() => setKeyOpen(true)}>
-                  {settings?.providerConnected ? "Change key" : "Connect"}
-                </button>
-              </div>
-            </Item>
             <Item label="Default format">
               <Segmented
                 label="Default format"
@@ -199,18 +142,6 @@ export function Settings({
                 {scanning ? "Rescanning…" : "Rescan"}
               </button>
             </Item>
-            <Item
-              label="Existing videos"
-              caption="Imported read-only. Originals are never modified."
-            />
-            <Item
-              label="Export watermark"
-              caption="Downloads keep the original video unchanged. Studio adds no branding."
-            />
-            <Item
-              label="Versions"
-              caption="Safe editing and version history are not available yet."
-            />
           </div>
         </section>
         <section className="glass group">
@@ -243,63 +174,6 @@ export function Settings({
           </div>
         </section>
       </div>
-      {keyOpen && (
-        <Overlay
-          title="Connect AI provider"
-          onClose={() => {
-            if (!busy) {
-              setKeyOpen(false);
-              setApiKey("");
-            }
-          }}
-        >
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void connect();
-            }}
-          >
-            <label className="label" htmlFor="api-key">
-              OpenRouter API key
-            </label>
-            <input
-              id="api-key"
-              className="field key-field"
-              type="password"
-              autoComplete="new-password"
-              spellCheck={false}
-              maxLength={4096}
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-            />
-            <p className="caption">
-              Stored privately on this computer, never returned to the browser.
-              Generation uses paid APIs only after you approve an estimate.
-            </p>
-            {error && <Notice error>{error}</Notice>}
-            <div className="overlay-footer">
-              <button
-                className="btn quiet"
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setKeyOpen(false);
-                  setApiKey("");
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn"
-                type="submit"
-                disabled={!apiKey.trim() || busy}
-              >
-                {busy ? "Connecting…" : "Connect"}
-              </button>
-            </div>
-          </form>
-        </Overlay>
-      )}
       {info && (
         <Overlay
           title={info === "help" ? "About this release" : "Licenses"}
@@ -313,9 +187,10 @@ export function Settings({
                 close the page.
               </p>
               <p>
-                Explore existing videos, inspect scenes, and download completed
-                videos. Scene changes, new export presets, uploads, and version
-                history are still being built.
+                Edit scenes, compare versions, and export completed videos.
+                Changes are reviewed before creating a new version; originals
+                are never overwritten. Provider credentials are configured by
+                the operator when starting Studio.
               </p>
               <p>
                 Interrupted work never retries automatically. Check the original

@@ -6,6 +6,13 @@ See [the execution and acceptance checklist](IMPLEMENTATION.md) for scope and ve
 
 ## Run locally
 
+For the containerized Studio (Docker + Compose only), run `./run.sh` from the repository root
+and open <http://localhost:3000>. The launcher builds the image, including Whisper and ffmpeg,
+then waits for Studio readiness. See [container operations](../docs/container.md) for runtime
+credentials and the `cli`, `whisper`, `ffmpeg`, and `ffprobe` subcommands.
+
+For native development without Docker:
+
 Requirements: Linux, Node.js 22.13 or newer, Rust 1.88+, ffmpeg/ffprobe and the normal
 [CLI media dependencies](../README.md#requirements). Node 20 cannot run Studio's SQLite store.
 
@@ -20,12 +27,14 @@ npm --prefix studio run server
 ```
 
 Studio serves the built app and API on one origin and listens on loopback by default. It does not
-start generation merely because you open it. Connect an OpenRouter key in Settings, describe a
-video, and review the estimate before approving any paid work. API keys are write-only and are
-stored in a private file with mode 0600. A configured key is **not** a verified provider connection.
+start generation merely because you open it. Supply `OPENROUTER_API_KEY` in the server environment,
+describe a video, and review the estimate before approving paid work. Settings contains theme,
+generation defaults, saved-video location/rescan, and application information—not credentials.
+A configured key is **not** a verified provider connection. Previously saved private credentials
+remain in the state directory and take precedence over environment keys.
 
 Studio does not automatically load the repository `.env`. Supply server settings through the
-process environment; connect the provider in Settings or export `OPENROUTER_API_KEY` when starting
+process environment; export `OPENROUTER_API_KEY` when starting
 the server. Generation subprocesses run in isolated directories with `--no-dotenv`, so neither
 local nor ancestor `.env` files can change an approval; the environment is bound to the estimate.
 Studio's narration/caption toggles take precedence over their `REELMAESTRO_NO_*` environment

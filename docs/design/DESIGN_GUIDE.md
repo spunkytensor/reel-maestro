@@ -2,9 +2,9 @@
 
 This guide tells a coding agent how to build Studio screens that match the approved mockups in
 `docs/design/*.png`. It is normative: an implementation that follows this document and the token
-file at `docs/design/src/studio.css` is correct; one that improvises is not. Where the visual notes
-in `STUDIO_PLAN.md` §3 and this guide differ, this guide wins. The plan still owns behaviour,
-safety and the CLI contract.
+file at `docs/design/src/studio.css` is correct; one that improvises is not. Current behaviour,
+safety and the CLI contract are documented in `studio/README.md`. Explicit product changes may
+simplify the original mockups while retaining these visual tokens and accessibility rules.
 
 Use it in three ways:
 
@@ -348,7 +348,7 @@ back path is always visible and cheap: undo is global, versions are automatic an
 4. Tab through the screen: focus rings visible, order sensible, every popover and sheet closes with
    Escape and returns focus.
 5. Read every string aloud against §8; anything from the left column is a defect.
-6. Keep the screenshots with the implementation results, as `STUDIO_PLAN.md` §8 requires.
+6. Keep inspected screenshots with the implementation results.
 
 Mockup sources: `docs/design/src/*.html` (states via query flags, e.g. `?theme=dark&drafts=1&sheet=review`),
 tokens in `docs/design/src/studio.css`, renderer `node docs/design/src/render.js`.

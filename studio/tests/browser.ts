@@ -411,25 +411,49 @@ try {
 
   await page.getByRole("link", { name: "Back to projects" }).click();
   await page.getByRole("link", { name: "Settings", exact: true }).click();
+  for (const label of [
+    "AI provider",
+    "Reduce transparency",
+    "Reduce motion",
+    "Existing videos",
+    "Export watermark",
+    "Versions",
+  ]) {
+    assert.equal(
+      await page.getByText(label, { exact: true }).count(),
+      0,
+      `${label} removed from Settings`,
+    );
+  }
+  await screenshot(page, "settings-light");
   await page.getByRole("radio", { name: "Dark", exact: true }).click();
-  await page
-    .getByRole("switch", { name: "Reduce transparency", exact: true })
-    .click();
-  await screenshot(page, "settings-dark-solid");
+  await screenshot(page, "settings-dark");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await screenshot(page, "settings-mobile-dark");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() =>
+    localStorage.setItem(
+      "reelmaestro.appearance",
+      JSON.stringify({ theme: "dark", solid: true, motion: true }),
+    ),
+  );
   await page.reload();
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
   assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
-  assert.equal(await page.locator("html").getAttribute("data-solid"), "1");
   assert.equal(
-    await page
-      .locator(".group")
-      .first()
-      .evaluate((element) => getComputedStyle(element).backdropFilter),
-    "none",
+    await page.locator("html").getAttribute("data-solid"),
+    "0",
+    "removed stored overrides do not affect appearance",
   );
-  await page
-    .getByRole("switch", { name: "Reduce transparency", exact: true })
-    .click();
+  assert.equal(
+    await page.locator("html").getAttribute("data-motion"),
+    "reduce",
+    "OS reduced-motion preference is respected",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.waitForFunction(
+    () => document.documentElement.dataset.motion === "normal",
+  );
   await page.getByRole("radio", { name: "System", exact: true }).click();
   await page.emulateMedia({ colorScheme: "dark" });
   await page.waitForFunction(

@@ -242,10 +242,8 @@ export function Start({
                 </>
               ) : !settings.providerConnected ? (
                 <>
-                  Connect your AI service to generate.{" "}
-                  <a className="text-button" href="#settings">
-                    Connect
-                  </a>
+                  Configure OPENROUTER_API_KEY in the server environment to
+                  generate.
                 </>
               ) : (
                 <>

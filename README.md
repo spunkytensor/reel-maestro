@@ -1,7 +1,5 @@
 # Reel Maestro
 
-![Reel Maestro Studio editor showing an espresso video, scene list, and timeline](docs/studio-screenshot.png)
-
 [![CI](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml)
 [![CVE Audit](https://github.com/spunkytensor/reel-maestro/actions/workflows/security.yml/badge.svg)](https://github.com/spunkytensor/reel-maestro/actions/workflows/security.yml)
 
@@ -22,6 +20,36 @@ This project is open source under the [Apache License 2.0](LICENSE). Contributio
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
 
 See https://www.youtube.com/@ReelMaestroSamples for examples of reels created with this project, including sample prompts.
+
+## Launch Studio
+
+Install Docker Engine (or Docker Desktop) with Docker Compose, then run from this checkout:
+
+```sh
+./run.sh
+# Open http://localhost:3000
+```
+
+The launcher builds the services in `compose.yaml`, starts Studio, and waits for readiness.
+The image includes the Rust CLI, Node server, Whisper with its base model, and ffmpeg/ffprobe;
+no host Python, Rust, Node, or media-tool installation is required. Videos are saved in host `./out`.
+Use `REELMAESTRO_PORT=3300 ./run.sh` if port 3000 is occupied.
+
+```sh
+./run.sh cli --help
+./run.sh whisper --help
+./run.sh ffmpeg -version
+./run.sh ffprobe -version
+./run.sh status
+./run.sh stop
+```
+
+Provider credentials must be explicitly supplied at runtime; the launcher does not import your
+repository `.env` into the container. See [runtime credentials and container operations](docs/container.md)
+and [native Studio startup](studio/README.md#run-locally). The default Docker port is loopback-only,
+not an authenticated public service.
+
+![Reel Maestro Studio in dark mode showing an espresso video, scene list, and timeline](docs/studio-screenshot.png)
 
 ## How it works
 
@@ -376,7 +404,7 @@ clip and fits it to narration. Long scene windows may stretch the longest suppor
 Original output is scaled by Reel Maestro; H3's padded landscape `1080p` export is not requested.
 The job manifest retains provider provenance/measurements; disclose AI generation when sharing.
 
-This adapter targets the [local H3 service contract](https://github.com/mattcurf/minimax-h3).
+This adapter targets a separately provisioned local video-generation service with a compatible API.
 Provision it separately and comply with the model license or your separate grant; Reel Maestro
 does not download weights or confer model-use rights. The recorded setup uses a 32 GB RTX 5090
 and substantial host RAM (some reference tests exceeded 200 GiB). Advertised profiles are not

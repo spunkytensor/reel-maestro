@@ -6,14 +6,16 @@ try {
     (p.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches)
       ? "dark"
       : "light";
-  document.documentElement.dataset.solid =
-    p.solid || matchMedia("(prefers-reduced-transparency: reduce)").matches
-      ? "1"
-      : "0";
-  document.documentElement.dataset.motion =
-    p.motion || matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "reduce"
-      : "normal";
+  document.documentElement.dataset.solid = matchMedia(
+    "(prefers-reduced-transparency: reduce)",
+  ).matches
+    ? "1"
+    : "0";
+  document.documentElement.dataset.motion = matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  ).matches
+    ? "reduce"
+    : "normal";
 } catch {
   /* Unavailable storage falls back to the system theme in CSS. */
 }
