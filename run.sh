@@ -16,7 +16,7 @@ Commands:
   ffmpeg [args...]   Run ffmpeg
   ffprobe [args...]  Run ffprobe
   status             Show Compose service status
-  stop               Stop and remove the Compose services
+  stop               Stop services cleanly; preserve containers, volumes, and data
   help               Show this help
 EOF
 }
@@ -74,6 +74,6 @@ case "$command" in
         docker compose ps
         ;;
     stop)
-        docker compose down
+        docker compose --profile cli stop --timeout 60
         ;;
 esac

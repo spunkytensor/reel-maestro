@@ -17,7 +17,10 @@ Install Docker Engine with Compose 2.24 or newer, then run from the repository r
 The launcher resolves the repository directory independently of the current working directory,
 builds every Compose service (including the CLI-profile service), and waits for Studio to become
 healthy. Use `REELMAESTRO_PORT=3300 ./run.sh` to select another free loopback port. Run
-`./run.sh stop` to stop this Compose project.
+`./stop.sh` (or `./run.sh stop`) to stop this Compose project. Shutdown allows 60 seconds for
+the server to terminate child work and persist interruption state. It uses `docker compose stop`,
+not `down`: containers, networks, named volumes, credentials, and host output remain intact.
+Neither stop command builds images or deletes data. Start again with `./run.sh`.
 
 Open <http://localhost:3000>. The server listens on all interfaces *inside* its container, but
 Compose publishes it only on host loopback (`127.0.0.1`) by default. This preserves the exact

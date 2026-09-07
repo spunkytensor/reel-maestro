@@ -4,7 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TEMP=$(mktemp -d)
 trap 'rm -rf "$TEMP"' EXIT HUP INT TERM
-cp "$ROOT/run.sh" "$ROOT/compose.yaml" "$TEMP/"
+cp "$ROOT/run.sh" "$ROOT/stop.sh" "$ROOT/compose.yaml" "$TEMP/"
 mkdir "$TEMP/bin"
 cat > "$TEMP/.env" <<'EOF'
 OPENROUTER_API_KEY=synthetic-launcher-key
@@ -23,10 +23,16 @@ chmod +x "$TEMP/bin/docker"
 CHECK_LOG="$TEMP/calls" PATH="$TEMP/bin:$PATH" "$TEMP/run.sh" cli --help
 test "$(sed -n '1p' "$TEMP/calls")" = 'compose --profile cli build'
 test "$(sed -n '2p' "$TEMP/calls")" = 'compose run --rm cli --help'
+mkdir -p "$TEMP/out"
+printf 'retained output\n' > "$TEMP/out/sentinel"
+CHECK_LOG="$TEMP/stop-calls" PATH="$TEMP/bin:$PATH" "$TEMP/stop.sh"
+test "$(cat "$TEMP/stop-calls")" = 'compose --profile cli stop --timeout 60'
+test "$(cat "$TEMP/out/sentinel")" = 'retained output'
+test -f "$TEMP/.env"
 OPENROUTER_API_KEY=synthetic-launcher-key docker compose --project-directory "$TEMP" -f "$TEMP/compose.yaml" config --format json |
   python3 -c 'import json,sys; c=json.load(sys.stdin); assert all(s["environment"]["OPENROUTER_API_KEY"]=="synthetic-launcher-key" and s["environment"]["REELMAESTRO_TEXT_MODEL"]=="synthetic model with spaces" and s["environment"]["REELMAESTRO_OUT_DIR"]=="/data/out" for s in c["services"].values())'
 rm "$TEMP/.env"
 OPENROUTER_API_KEY=synthetic-launcher-key REELMAESTRO_TEXT_MODEL='synthetic model with spaces' REELMAESTRO_PORT=3339 CHECK_LOG="$TEMP/calls" PATH="$TEMP/bin:$PATH" "$TEMP/run.sh" status
 OPENROUTER_API_KEY=synthetic-launcher-key docker compose --project-directory "$TEMP" -f "$TEMP/compose.yaml" config --format json |
   python3 -c 'import json,sys; c=json.load(sys.stdin); assert all(s["environment"]["OPENROUTER_API_KEY"]=="synthetic-launcher-key" for s in c["services"].values())'
-echo 'Launcher .env export, runtime injection, and missing-file checks passed.'
+echo 'Launcher export, runtime injection, missing-file, and non-destructive stop checks passed.'

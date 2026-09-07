@@ -41,7 +41,7 @@ Use `REELMAESTRO_PORT=3300 ./run.sh` if port 3000 is occupied.
 ./run.sh ffmpeg -version
 ./run.sh ffprobe -version
 ./run.sh status
-./run.sh stop
+./stop.sh                 # Clean shutdown; preserves volumes and data
 ```
 
 `run.sh` loads and exports the repository `.env` when present; Compose passes its values into
