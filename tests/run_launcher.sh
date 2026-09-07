@@ -19,7 +19,7 @@ test "$REELMAESTRO_TEXT_MODEL" = 'synthetic model with spaces'
 test "$REELMAESTRO_PORT" = 3339
 printf '%s\n' "$*" >> "$CHECK_LOG"
 case "$*" in
-    'compose port studio 3339') printf '%s\n' '127.0.0.1:3340' ;;
+    'compose port studio 3339') printf '%s\n' "${CHECK_BINDING-127.0.0.1:3340}" ;;
     'compose up -d --wait studio') exit "${CHECK_START_EXIT:-0}" ;;
 esac
 EOF
@@ -39,6 +39,12 @@ if CHECK_START_EXIT=1 CHECK_LOG="$TEMP/failure-calls" PATH="$TEMP/bin:$PATH" "$T
     exit 1
 fi
 if grep -q 'Ready' "$TEMP/failed-banner"; then exit 1; fi
+if CHECK_BINDING='' CHECK_LOG="$TEMP/no-port-calls" PATH="$TEMP/bin:$PATH" "$TEMP/run.sh" > "$TEMP/no-port-banner" 2> "$TEMP/no-port-error"; then
+    echo 'Missing published port must fail startup verification' >&2
+    exit 1
+fi
+if grep -q 'Ready' "$TEMP/no-port-banner"; then exit 1; fi
+grep -q 'Docker has no published port' "$TEMP/no-port-error"
 cat "$TEMP/banner"
 mkdir -p "$TEMP/out"
 printf 'retained output\n' > "$TEMP/out/sentinel"

@@ -27,13 +27,14 @@ Install Docker Engine (or Docker Desktop) with Docker Compose, then run from thi
 
 ```sh
 ./run.sh
-# Open http://localhost:3000
+# Open http://localhost:3001
 ```
 
 The launcher builds the services in `compose.yaml`, starts Studio, and waits for readiness.
 The image includes the Rust CLI, Node server, Whisper with its base model, and ffmpeg/ffprobe;
 no host Python, Rust, Node, or media-tool installation is required. Videos are saved in host `./out`.
-Use `REELMAESTRO_PORT=3300 ./run.sh` if port 3000 is occupied.
+Docker defaults to port 3001 to avoid common port-3000 services. Use `REELMAESTRO_PORT=3300 ./run.sh`
+to choose another port (an explicit port in `.env` takes precedence).
 
 ```sh
 ./run.sh cli --help

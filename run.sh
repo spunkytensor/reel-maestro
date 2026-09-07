@@ -59,12 +59,19 @@ startup_banner() {
     if [ -z "$host_ip" ]; then
         host_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || host_ip=
     fi
-    binding=$(docker compose port studio "${REELMAESTRO_PORT:-3000}" 2>/dev/null | head -n 1) || binding=
+    binding=$(docker compose port studio "${REELMAESTRO_PORT:-3001}" 2>/dev/null | head -n 1) || binding=
+    if [ -z "$binding" ]; then
+        printf '\nStudio passed internal health checks, but Docker has no published port.\n' >&2
+        printf 'Check for a port conflict, then recreate Studio with:\n' >&2
+        printf '  docker compose up -d --wait --force-recreate studio\n' >&2
+        printf 'Volumes and output will be preserved. Studio is not ready for browser access.\n' >&2
+        return 1
+    fi
     printf '\n============================================================\n'
     printf '  REEL MAESTRO STUDIO — Ready\n'
     printf '============================================================\n'
     printf '  Host IP       %s\n' "${host_ip:-Unavailable}"
-    printf '  Published     %s\n' "${binding:-Unavailable; check ./run.sh status}"
+    printf '  Published     %s\n' "$binding"
     case "$binding" in
         127.*|\[::1\]:*)
             printf '  Open Studio   http://localhost:%s\n' "${binding##*:}"
@@ -74,7 +81,6 @@ startup_banner() {
             printf '  Open locally  http://localhost:%s\n' "${binding##*:}"
             printf '  Access        All interfaces; Studio Host/Origin rules still apply\n'
             ;;
-        '') ;;
         *) printf '  Published URL http://%s\n' "$binding" ;;
     esac
     printf '  Videos        %s/out\n' "$SCRIPT_DIR"

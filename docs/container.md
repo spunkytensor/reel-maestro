@@ -26,9 +26,9 @@ After readiness succeeds, the launcher prints a startup banner with the detected
 actual Docker-published address/port, browser URL, output location, and status/stop commands.
 Loopback publication is explicitly labeled local-only; showing the host IP does not enable LAN access.
 
-Open <http://localhost:3000>. The server listens on all interfaces *inside* its container, but
+Open <http://localhost:3001>. The server listens on all interfaces *inside* its container, but
 Compose publishes it only on host loopback (`127.0.0.1`) by default. This preserves the exact
-`Host` and `Origin` checks for `localhost:3000`; it does not expose Studio to the LAN. To avoid a
+`Host` and `Origin` checks for `localhost:3001`; it does not expose Studio to the LAN. To avoid a
 local port conflict without changing the container's security checks:
 
 ```sh

@@ -7,7 +7,7 @@ See [the execution and acceptance checklist](IMPLEMENTATION.md) for scope and ve
 ## Run locally
 
 For the containerized Studio (Docker + Compose only), run `./run.sh` from the repository root
-and open <http://localhost:3000>. The launcher builds the image, including Whisper and ffmpeg,
+and open <http://localhost:3001>. The launcher builds the image, including Whisper and ffmpeg,
 then waits for Studio readiness. See [container operations](../docs/container.md) for runtime
 credentials and the `cli`, `whisper`, `ffmpeg`, and `ffprobe` subcommands.
 

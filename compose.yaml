@@ -22,7 +22,7 @@ x-reelmaestro-runtime: &reelmaestro-runtime
     REELMAESTRO_OUT_DIR: /data/out
     REELMAESTRO_STATE_DIR: /data/state
     REELMAESTRO_HOST: 0.0.0.0
-    REELMAESTRO_PORT: ${REELMAESTRO_PORT:-3000}
+    REELMAESTRO_PORT: ${REELMAESTRO_PORT:-3001}
     OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   volumes:
     - type: bind
@@ -42,7 +42,7 @@ services:
     <<: *reelmaestro-runtime
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${REELMAESTRO_PORT:-3000}:${REELMAESTRO_PORT:-3000}"
+      - "127.0.0.1:${REELMAESTRO_PORT:-3001}:${REELMAESTRO_PORT:-3001}"
 
   cli:
     <<: *reelmaestro-runtime
