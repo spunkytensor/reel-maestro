@@ -181,6 +181,36 @@ const browser = await chromium.launch({
 });
 const failures: string[] = [];
 async function screenshot(page: Page, name: string) {
+  await page.waitForFunction(() => {
+    const logo = document.querySelector<HTMLImageElement>(".corner-logo");
+    return logo?.complete && logo.naturalWidth > 0;
+  });
+  assert.equal(
+    await page
+      .locator("header")
+      .getByText("by Spunky Tensor", { exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.locator(".corner-logo").evaluate((logo) => {
+      const box = logo.getBoundingClientRect();
+      const action = document
+        .querySelector(".mobile-primary")
+        ?.getBoundingClientRect();
+      return (
+        box.right <= innerWidth &&
+        Math.abs(box.bottom - (innerHeight - 14)) < 1 &&
+        (!action ||
+          action.width === 0 ||
+          action.right <= box.left ||
+          action.bottom <= box.top ||
+          action.top >= box.bottom)
+      );
+    }),
+    true,
+    `${name}: corner logo fits without covering primary action`,
+  );
   await page.evaluate(async () => {
     await document.fonts.ready;
     await new Promise<void>((resolve) =>

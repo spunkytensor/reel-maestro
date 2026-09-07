@@ -150,4 +150,5 @@ and exposed in Settings. The source notices come from
 [Inter](https://github.com/rsms/inter/blob/master/LICENSE.txt) and
 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono/blob/master/OFL.txt).
 Browser tests use the same local stills as the mockups; those test media are not bundled into the app.
-The existing mascot and unapproved watermark asset are not included.
+The operator-supplied transparent Spunky Tensor logo is bundled as `web/public/logo.png` and
+displayed in the lower-right corner of Studio. It is UI branding, not an export watermark.

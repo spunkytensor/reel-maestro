@@ -284,6 +284,13 @@ export function App() {
           onRefresh={refreshJobs}
         />
       )}
+      <img
+        className="corner-logo"
+        src="/logo.png"
+        alt="Spunky Tensor"
+        width="44"
+        height="44"
+      />
       <div className="sr-only" role="status" aria-live="polite">
         {jobs
           .filter((job) => job.id === newJob.current)

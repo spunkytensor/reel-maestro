@@ -29,7 +29,6 @@ export function Brand() {
         ))}
       </svg>
       <span className="name">Reel Maestro</span>
-      <span className="by">by Spunky Tensor</span>
     </a>
   );
 }

@@ -42,8 +42,15 @@ button,
 a {
   touch-action: manipulation;
 }
-.brand .by {
-  color: var(--ink-2);
+.corner-logo {
+  position: fixed;
+  right: 16px;
+  bottom: 14px;
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 20;
 }
 .bar .nav a,
 .btn,
@@ -397,7 +404,7 @@ a {
 }
 .editor-workspace {
   position: fixed;
-  inset: 92px 16px 16px;
+  inset: 92px 16px 72px;
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 16px;
@@ -878,8 +885,8 @@ html[data-motion="reduce"] *::after {
     position: fixed;
     bottom: 12px;
     left: 12px;
-    right: 12px;
-    width: calc(100% - 24px);
+    right: 76px;
+    width: calc(100% - 88px);
     height: 48px;
     z-index: 45;
   }

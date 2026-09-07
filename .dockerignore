@@ -31,4 +31,5 @@ todo.md
 *.jpg
 *.jpeg
 *.png
+!studio/web/public/logo.png
 watermark_transparent_spunkytensor.png
