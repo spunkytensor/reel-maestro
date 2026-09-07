@@ -44,8 +44,9 @@ Use `REELMAESTRO_PORT=3300 ./run.sh` if port 3000 is occupied.
 ./run.sh stop
 ```
 
-Provider credentials must be explicitly supplied at runtime; the launcher does not import your
-repository `.env` into the container. See [runtime credentials and container operations](docs/container.md)
+`run.sh` loads and exports the repository `.env` when present; Compose passes its values into
+the containers at runtime, including `OPENROUTER_API_KEY`. The file is never baked into the image.
+Use Docker Compose 2.24 or newer. See [runtime credentials and container operations](docs/container.md)
 and [native Studio startup](studio/README.md#run-locally). The default Docker port is loopback-only,
 not an authenticated public service.
 

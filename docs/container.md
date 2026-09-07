@@ -7,7 +7,7 @@ not mounted or required at runtime.
 
 ## Install and start
 
-Install Docker Engine with the Compose plugin, then run from the repository root:
+Install Docker Engine with Compose 2.24 or newer, then run from the repository root:
 
 ```sh
 ./run.sh
@@ -29,25 +29,22 @@ REELMAESTRO_PORT=3300 ./run.sh
 # Open http://localhost:3300
 ```
 
-Runtime provider credentials are not configured by the launcher or the Studio Settings UI. Add
-them explicitly through a Compose override when provider-backed operations are needed. For
-example, a protected override file can inject an exported host variable:
+`run.sh` sources the repository `.env` with automatic export before invoking Docker. Values in
+that file override existing launcher environment values. The file is optional; without it,
+exported variables still configure Compose and `OPENROUTER_API_KEY` is forwarded explicitly.
+Help does not load `.env` or invoke Docker.
 
-```yaml
-# compose.credentials.yaml (keep this file private)
-services:
-  studio:
-    environment:
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-  cli:
-    environment:
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-```
+Both services load `.env` through Compose's optional runtime `env_file`. Container-specific
+HOME, output/state directories, bind address and port remain controlled by `compose.yaml`.
+Use container-valid paths for other overrides, such as music inputs or the Whisper executable.
 
-Set `COMPOSE_FILE=compose.yaml:compose.credentials.yaml` when invoking `run.sh`. Do not put
-credentials in the image or build arguments. Compose may read a repository `.env` for variable
-substitution, but the base `compose.yaml` does **not** inject provider keys into containers, so a
-key merely present in `.env` is not available to Studio or the CLI.
+Treat `.env` as trusted shell-compatible configuration: sourcing it can execute shell commands.
+Keep it outside Git, restrict its permissions (for example `chmod 600 .env`), and never enable
+shell tracing while loading it. It remains excluded from the image build context and is not
+mounted into the container. Runtime environment values are visible to Docker administrators
+through inspection; this is environment injection, not an encrypted secrets vault. Avoid posting
+`docker compose config` output. Previously saved Studio credentials take precedence over an
+environment key; the Settings UI does not edit credentials.
 
 ## CLI and files
 

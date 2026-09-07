@@ -40,6 +40,13 @@ case "$command" in
         ;;
 esac
 
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    # Source only the operator-owned repository file; never print its contents.
+    set -a
+    . "$SCRIPT_DIR/.env"
+    set +a
+fi
+
 case "$command" in
     start|cli|whisper|ffmpeg|ffprobe)
         mkdir -p out

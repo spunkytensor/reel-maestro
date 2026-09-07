@@ -14,12 +14,16 @@ x-reelmaestro-runtime: &reelmaestro-runtime
     - ALL
   security_opt:
     - no-new-privileges:true
+  env_file:
+    - path: .env
+      required: false
   environment:
     HOME: /home/reelmaestro
     REELMAESTRO_OUT_DIR: /data/out
     REELMAESTRO_STATE_DIR: /data/state
     REELMAESTRO_HOST: 0.0.0.0
     REELMAESTRO_PORT: ${REELMAESTRO_PORT:-3000}
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   volumes:
     - type: bind
       source: ./out
