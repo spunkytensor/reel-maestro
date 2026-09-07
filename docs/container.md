@@ -22,6 +22,10 @@ the server to terminate child work and persist interruption state. It uses `dock
 not `down`: containers, networks, named volumes, credentials, and host output remain intact.
 Neither stop command builds images or deletes data. Start again with `./run.sh`.
 
+After readiness succeeds, the launcher prints a startup banner with the detected host IP,
+actual Docker-published address/port, browser URL, output location, and status/stop commands.
+Loopback publication is explicitly labeled local-only; showing the host IP does not enable LAN access.
+
 Open <http://localhost:3000>. The server listens on all interfaces *inside* its container, but
 Compose publishes it only on host loopback (`127.0.0.1`) by default. This preserves the exact
 `Host` and `Origin` checks for `localhost:3000`; it does not expose Studio to the LAN. To avoid a

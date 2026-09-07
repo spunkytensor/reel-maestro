@@ -18,11 +18,28 @@ test "$OPENROUTER_API_KEY" = synthetic-launcher-key
 test "$REELMAESTRO_TEXT_MODEL" = 'synthetic model with spaces'
 test "$REELMAESTRO_PORT" = 3339
 printf '%s\n' "$*" >> "$CHECK_LOG"
+case "$*" in
+    'compose port studio 3339') printf '%s\n' '127.0.0.1:3340' ;;
+    'compose up -d --wait studio') exit "${CHECK_START_EXIT:-0}" ;;
+esac
 EOF
 chmod +x "$TEMP/bin/docker"
 CHECK_LOG="$TEMP/calls" PATH="$TEMP/bin:$PATH" "$TEMP/run.sh" cli --help
 test "$(sed -n '1p' "$TEMP/calls")" = 'compose --profile cli build'
 test "$(sed -n '2p' "$TEMP/calls")" = 'compose run --rm cli --help'
+CHECK_LOG="$TEMP/start-calls" PATH="$TEMP/bin:$PATH" "$TEMP/run.sh" > "$TEMP/banner"
+grep -q 'REEL MAESTRO STUDIO.*Ready' "$TEMP/banner"
+grep -q 'Host IP' "$TEMP/banner"
+grep -q 'http://localhost:3340' "$TEMP/banner"
+grep -q 'LAN access is disabled' "$TEMP/banner"
+grep -q './stop.sh' "$TEMP/banner"
+if grep -q 'synthetic-launcher-key' "$TEMP/banner"; then exit 1; fi
+if CHECK_START_EXIT=1 CHECK_LOG="$TEMP/failure-calls" PATH="$TEMP/bin:$PATH" "$TEMP/run.sh" > "$TEMP/failed-banner"; then
+    echo 'Failed startup must not succeed' >&2
+    exit 1
+fi
+if grep -q 'Ready' "$TEMP/failed-banner"; then exit 1; fi
+cat "$TEMP/banner"
 mkdir -p "$TEMP/out"
 printf 'retained output\n' > "$TEMP/out/sentinel"
 CHECK_LOG="$TEMP/stop-calls" PATH="$TEMP/bin:$PATH" "$TEMP/stop.sh"

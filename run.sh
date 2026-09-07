@@ -54,9 +54,39 @@ case "$command" in
         ;;
 esac
 
+startup_banner() {
+    host_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}') || host_ip=
+    if [ -z "$host_ip" ]; then
+        host_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || host_ip=
+    fi
+    binding=$(docker compose port studio "${REELMAESTRO_PORT:-3000}" 2>/dev/null | head -n 1) || binding=
+    printf '\n============================================================\n'
+    printf '  REEL MAESTRO STUDIO — Ready\n'
+    printf '============================================================\n'
+    printf '  Host IP       %s\n' "${host_ip:-Unavailable}"
+    printf '  Published     %s\n' "${binding:-Unavailable; check ./run.sh status}"
+    case "$binding" in
+        127.*|\[::1\]:*)
+            printf '  Open Studio   http://localhost:%s\n' "${binding##*:}"
+            printf '  Access        This computer only (LAN access is disabled)\n'
+            ;;
+        0.0.0.0:*|\[::\]:*)
+            printf '  Open locally  http://localhost:%s\n' "${binding##*:}"
+            printf '  Access        All interfaces; Studio Host/Origin rules still apply\n'
+            ;;
+        '') ;;
+        *) printf '  Published URL http://%s\n' "$binding" ;;
+    esac
+    printf '  Videos        %s/out\n' "$SCRIPT_DIR"
+    printf '  Status        ./run.sh status\n'
+    printf '  Stop safely   ./stop.sh\n'
+    printf '============================================================\n\n'
+}
+
 case "$command" in
     start)
         docker compose up -d --wait studio
+        startup_banner
         ;;
     cli)
         docker compose run --rm cli "$@"
