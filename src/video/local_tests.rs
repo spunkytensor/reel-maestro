@@ -569,21 +569,12 @@ async fn changed_endpoint_and_saved_cross_origin_poll_are_rejected_before_networ
     let dir = TempDir::new("origins");
     let image = dir.0.join("unused");
     let config = cfg("http://127.0.0.1:9", VideoInputMode::Text);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    config.video_input_mode.hash(&mut h);
-    "local/minimax-h3".hash(&mut h);
-    "move".hash(&mut h);
-    5_u32.hash(&mut h);
-    "960x544".hash(&mut h);
-    config.video_seed.hash(&mut h);
-    config.video_steps.hash(&mut h);
-    Option::<Vec<u8>>::None.hash(&mut h);
     let manifest = LocalManifest {
         version: 1,
         provider: "local".into(),
         provider_origin: config.video_base_url.clone(),
         model: "local/minimax-h3".into(),
-        input_fingerprint: format!("{:016x}", h.finish()),
+        input_fingerprint: local_fingerprint(&config, "move", 5, "960x544", None).unwrap(),
         idempotency_key: "fixed".into(),
         request: json!({}),
         job_id: Some("job-1".into()),

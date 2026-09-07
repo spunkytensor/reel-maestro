@@ -1231,6 +1231,7 @@ mod tests {
     #[test]
     fn location_anchor_is_first_scene_per_location() {
         let sc = |loc: &str| Scene {
+            id: String::new(),
             line: String::new(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),

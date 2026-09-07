@@ -1,0 +1,81 @@
+name: Container
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Record host-compatible IDs
+        id: ids
+        run: |
+          echo "uid=$(id -u)" >> "$GITHUB_OUTPUT"
+          echo "gid=$(id -g)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Audit production Node dependencies
+        run: npm --prefix studio audit --omit=dev --audit-level=high
+
+      - name: Build runtime image
+        run: |
+          docker build \
+            --build-arg REELMAESTRO_UID=${{ steps.ids.outputs.uid }} \
+            --build-arg REELMAESTRO_GID=${{ steps.ids.outputs.gid }} \
+            --tag reel-maestro:ci .
+
+      - name: Verify bundled dependencies and CLI
+        run: |
+          docker run --rm --entrypoint sh reel-maestro:ci -c '
+            set -eu
+            test "$(id -u)" != 0
+            reelmaestro --help >/dev/null
+            ffmpeg -hide_banner -version >/dev/null
+            ffprobe -hide_banner -version >/dev/null
+            ffmpeg -hide_banner -filters 2>/dev/null | grep -q subtitles
+            whisper_timestamped --help >/dev/null
+            test -s "$HOME/.cache/whisper/base.pt"
+            echo "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e  $HOME/.cache/whisper/base.pt" | sha256sum -c -
+            test ! -e /app/src
+            test ! -e /app/Cargo.toml
+          '
+
+      - name: Verify offline Studio readiness
+        run: |
+          docker run --detach --name reel-maestro-studio-ci \
+            --env REELMAESTRO_PORT=3337 reel-maestro:ci
+          trap 'docker logs reel-maestro-studio-ci; docker rm --force reel-maestro-studio-ci' EXIT
+          for attempt in $(seq 1 30); do
+            docker exec reel-maestro-studio-ci \
+              node /usr/local/lib/reelmaestro/healthcheck.js && break
+            sleep 1
+          done
+          docker exec reel-maestro-studio-ci node /usr/local/lib/reelmaestro/healthcheck.js
+
+      - name: Render offline fixture into host output
+        run: |
+          mkdir -p container-output
+          docker run --rm --network none \
+            --volume "$PWD/container-output:/data/out" \
+            --entrypoint /usr/local/lib/reelmaestro/offline-fixture.sh \
+            reel-maestro:ci
+          test -s container-output/docker-offline-fixture/reel.mp4
+
+      - name: Scan image vulnerabilities
+        run: |
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.67.2 image \
+            --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL \
+            reel-maestro:ci

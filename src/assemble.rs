@@ -180,6 +180,7 @@ fn build_single_pass(
         fontsdir,
         canvas: opts.canvas,
         watermark: watermark.as_deref(),
+        export_preset: ffmpeg::export_preset(),
         output,
     })?;
     Ok(opts.dir.join(output))
@@ -265,6 +266,7 @@ fn build_chunked(
             fontsdir,
             canvas: opts.canvas,
             watermark: watermark.as_deref(),
+            export_preset: ffmpeg::export_preset(),
             output: &seg_name,
         })?;
         segments.push(seg_name);
@@ -446,6 +448,7 @@ mod tests {
 
     fn scene_with(transition: &str) -> Scene {
         Scene {
+            id: String::new(),
             line: "w".into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -458,6 +461,7 @@ mod tests {
     #[test]
     fn scene_windows_snap_to_word_timestamps() {
         let sc = |line: &str| Scene {
+            id: String::new(),
             line: line.into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -520,6 +524,7 @@ mod tests {
     #[test]
     fn scene_windows_preserve_audio_length_and_skip_empty_word_shares() {
         let sc = |line: &str| Scene {
+            id: String::new(),
             line: line.into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -624,6 +629,7 @@ mod tests {
         // Synthetic scenes + word timings spanning the 6s.
         let scenes = vec![
             Scene {
+                id: String::new(),
                 line: "one two three".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
@@ -632,6 +638,7 @@ mod tests {
                 motion_prompt: String::new(),
             },
             Scene {
+                id: String::new(),
                 line: "four five six".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
@@ -640,6 +647,7 @@ mod tests {
                 motion_prompt: String::new(),
             },
             Scene {
+                id: String::new(),
                 line: "seven eight nine".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
@@ -777,6 +785,7 @@ mod tests {
 
         // Four scenes of three words each, timed evenly across the 12s.
         let sc = |line: &str| Scene {
+            id: String::new(),
             line: line.into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -1008,6 +1017,7 @@ mod tests {
             .unwrap();
 
         let scenes = vec![Scene {
+            id: String::new(),
             line: "one two three four five six".into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -1131,6 +1141,7 @@ mod tests {
 
         let scenes = vec![
             Scene {
+                id: String::new(),
                 line: "one two three four".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
@@ -1139,6 +1150,7 @@ mod tests {
                 motion_prompt: String::new(),
             },
             Scene {
+                id: String::new(),
                 line: "five six seven eight".into(),
                 image_prompt: String::new(),
                 cast_ids: Vec::new(),
@@ -1220,6 +1232,7 @@ mod tests {
         ffmpeg::silent_track(&audio, 8.0).unwrap();
 
         let scenes = vec![Scene {
+            id: String::new(),
             line: "one two three four".into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -1292,6 +1305,7 @@ mod tests {
         ffmpeg::silent_track(&audio, 8.0).unwrap();
 
         let scenes = vec![Scene {
+            id: String::new(),
             line: "a b c d e f g h".into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -1362,6 +1376,7 @@ mod tests {
         let audio = dir.join("audio.mp3");
         ffmpeg::silent_track(&audio, 6.0).unwrap();
         let scenes = vec![Scene {
+            id: String::new(),
             line: "a b c d".into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),
@@ -1432,6 +1447,7 @@ mod tests {
     #[test]
     fn scene_windows_document_word_mapping_fallbacks_and_duration_floor() {
         let scene = |line: &str| Scene {
+            id: String::new(),
             line: line.into(),
             image_prompt: String::new(),
             cast_ids: Vec::new(),

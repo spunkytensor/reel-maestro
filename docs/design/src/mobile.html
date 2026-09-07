@@ -1,0 +1,80 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Mobile — Reel Maestro Studio</title><link rel="stylesheet" href="studio.css">
+<style>
+.view { display: none; } :root[data-view="start"] .v-start, :root[data-view="editor"] .v-editor, :root[data-view="exported"] .v-exported { display: block; }
+.bar { left: 12px; right: 12px; top: 12px; height: 52px; padding: 0 8px 0 14px; border-radius: 26px; }
+.bar .proj .n { font-weight: 600; font-size: .9375rem; } .bar .proj .v { font-size: .75rem; color: var(--ink-2); }
+.pin { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 40; }
+.pin .btn { width: 100%; }
+/* start */
+.s-card { position: fixed; left: 12px; right: 12px; top: 80px; padding: 22px 20px; }
+.s-card .field.big { margin-top: 16px; min-height: 120px; font-size: 1.0625rem; }
+.s-card .seg { display: flex; margin-top: 12px; } .s-card .seg span { flex: 1; justify-content: center; }
+/* editor */
+.m-preview { position: fixed; left: 0; right: 0; top: 76px; height: 336px; display: grid; place-items: center; }
+.m-preview .frame { height: 336px; aspect-ratio: 9/16; border-radius: 18px; overflow: hidden; background: #000; position: relative; }
+.m-preview .frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.m-preview .cap { position: absolute; left: 0; right: 0; bottom: 10%; text-align: center; color: #fff; font-weight: 700; font-size: 1.125rem; text-shadow: 0 1px 0 #000, 0 0 8px rgba(0,0,0,.8), 1px 1px 0 #000, -1px -1px 0 #000; }
+.m-scrub { position: fixed; left: 12px; right: 12px; top: 424px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.m-scrub .track { min-height: 40px; }
+.m-scrub .track .seg-clip { border-radius: 7px; }
+.m-sheet { position: fixed; left: 0; right: 0; bottom: 0; top: 548px; border-radius: 24px 24px 0 0; padding: 8px 16px 84px; }
+.m-sheet .handle { width: 36px; height: 5px; border-radius: 5px; background: var(--ink-3); margin: 4px auto 12px; }
+.m-sheet .scene { padding: 6px 6px; }
+/* exported */
+.x-card { position: fixed; left: 12px; right: 12px; top: 96px; padding: 22px 20px; text-align: center; }
+.x-card img { height: 220px; border-radius: 12px; display: block; margin: 0 auto 16px; }
+.x-card .share { display: flex; gap: 8px; margin-top: 14px; }
+.x-card .field { flex: 1; text-align: left; font-size: .875rem; padding: 9px 12px; min-height: 0; }
+</style></head>
+<body>
+<div class="view v-start">
+  <header class="bar glass"><div class="brand" id="brand"><span class="name">Reel Maestro</span></div><div class="spacer"></div><nav class="nav row"><a href="#">Projects</a></nav></header>
+  <section class="glass s-card">
+    <h1 class="section" style="font-size:1.5rem">Describe the video you want</h1>
+    <p class="caption" style="margin-top:6px">A topic is enough. Or paste a link, or drop in a script.</p>
+    <div class="field big">Expectation vs. reality: the creator life. Self-aware, funny, ends with trying again.</div>
+    <div class="seg"><span class="on">Vertical</span><span>Widescreen</span></div>
+    <div class="seg"><span>Quick draft</span><span class="on">Balanced</span><span>Best</span></div>
+    <p class="caption" style="margin-top:14px">Narration, captions and music on · <a href="#" style="color:var(--ink-1);font-weight:500">Customize</a></p>
+    <p class="caption" style="margin-top:6px">Estimated cost <span class="tc">$0.12</span> · about 3 minutes</p>
+  </section>
+  <div class="pin"><button class="btn primary lg"><span>Generate video</span></button></div>
+</div>
+
+<div class="view v-editor">
+  <header class="bar glass"><button class="btn quiet icon" id="back"></button><div class="proj"><div class="n">Creator Life</div><div class="v">Version 1 · Saved</div></div><div class="spacer"></div><button class="btn quiet icon" id="undo"></button></header>
+  <div class="m-preview"><div class="frame"><img src="assets/cre-02.jpg" alt=""><div class="cap">a collapsing tripod,</div></div></div>
+  <div class="glass m-scrub">
+    <div class="transport"><span class="tbtn" id="play"></span><span class="tc">00:14.0</span><span class="caption">/</span><span class="tc ink-2">00:34.6</span><span class="grow"></span><span class="tbtn" id="cc"></span></div>
+    <div class="track"><div class="seg-clip"><img src="assets/cre-00.jpg" alt=""></div><div class="seg-clip"><img src="assets/cre-01.jpg" alt=""></div><div class="seg-clip on"><img src="assets/cre-02.jpg" alt=""></div><div class="seg-clip"><img src="assets/cre-03.jpg" alt=""></div><div class="seg-clip"><img src="assets/cre-04.jpg" alt=""></div><div class="seg-clip"><img src="assets/cre-05.jpg" alt=""></div><div class="head" style="left:40%"></div></div>
+  </div>
+  <div class="glass elevated m-sheet">
+    <div class="handle"></div>
+    <div class="seg tabs" style="display:flex;margin-bottom:8px"><span class="on">Scenes</span><span>Narration</span><span>Music</span></div>
+    <div class="scenes">
+      <div class="scene"><div class="th"><img src="assets/cre-01.jpg" alt=""></div><div><div class="t">Scene 2</div><div class="c trunc">47 takes of one sentence…</div></div></div>
+      <div class="scene on"><div class="th"><img src="assets/cre-02.jpg" alt=""></div><div><div class="t">Scene 3</div><div class="c trunc">a collapsing tripod, lighting problems…</div></div><span class="edited" style="display:block"></span></div>
+      <div class="scene"><div class="th"><img src="assets/cre-03.jpg" alt=""></div><div><div class="t">Scene 4</div><div class="c trunc">editing at 2 a.m.…</div></div></div>
+    </div>
+  </div>
+  <div class="pin"><button class="btn primary lg"><span>Apply 1 change</span></button></div>
+</div>
+
+<div class="view v-exported">
+  <header class="bar glass"><button class="btn quiet icon" id="back2"></button><div class="proj"><div class="n">Creator Life</div><div class="v">Version 1</div></div></header>
+  <section class="glass elevated x-card">
+    <img src="assets/cre-poster.jpg" alt="">
+    <h1 class="title" style="font-size:1.75rem">Exported</h1>
+    <p class="caption" style="margin-top:6px"><span class="tc">reel-video.mp4</span> · <span class="tc">41 MB</span> · <span class="tc">00:34</span></p>
+    <div class="share"><div class="field trunc">reelmaestro.local/share/creator-life</div><button class="btn sm" id="copy">Copy link</button></div>
+    <div class="row" style="justify-content:center;margin-top:10px"><button class="btn quiet sm">Poster</button><button class="btn quiet sm">Captions</button><button class="btn quiet sm">Description</button></div>
+  </section>
+  <div class="pin"><button class="btn primary lg"><span>Download MP4</span></button></div>
+</div>
+<script src="shell.js"></script>
+<script>
+  const b = document.getElementById('brand'); if (b) b.insertAdjacentHTML('afterbegin', brandMark);
+  const set = (sel, id) => document.querySelectorAll(sel).forEach(el => el.insertAdjacentHTML('afterbegin', ic(id)));
+  set('#back', 'i-back'); set('#back2', 'i-back'); set('#undo', 'i-undo'); set('#play', 'i-pause'); set('#cc', 'i-cc'); set('#copy', 'i-copy');
+</script>
+</body></html>

@@ -1,0 +1,169 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Editor — Reel Maestro Studio</title><link rel="stylesheet" href="studio.css">
+<style>
+.bar .proj { display: flex; flex-direction: column; line-height: 1.2; }
+.bar .proj .n { font-weight: 600; font-size: .9375rem; letter-spacing: -0.01em; }
+.bar .proj .v { font-size: .75rem; color: var(--ink-2); margin-top: 2px; }
+.p-export, .p-apply, .p-applying, .act-pill { display: none; }
+:root:not([data-drafts]):not([data-applying]):not([data-panel]):not([data-exported]):not([data-sheet]) .p-export { display: inline-flex; }
+:root[data-drafts]:not([data-sheet]) .p-apply { display: inline-flex; }
+:root[data-applying] .p-applying { display: inline-flex; }
+:root[data-applying] .act-pill { display: inline-flex; }
+.scenes-panel { display: contents; } .export-panel { display: none; }
+:root[data-panel="export"] .scenes-panel { display: none; } :root[data-panel="export"] .export-panel { display: contents; }
+:root[data-drafts] .edited { display: block; } .edited { display: none; }
+:root[data-drafts] .hint-default { display: none; } .hint-drafts { display: none; } :root[data-drafts] .hint-drafts { display: block; }
+.side .hint { margin-top: auto; padding-top: 8px; }
+.popover.scene { left: 356px; top: 92px; }
+.popover.scene .item { display: block; padding: 10px 0; }
+.popover.scene .field { margin-top: 6px; font-size: .9375rem; padding: 10px 14px; min-height: 0; }
+.popover.activity { right: 176px; top: 84px; width: 420px; }
+.popover.activity .item { align-items: flex-start; }
+.sheet .group { margin-top: 20px; }
+.sheet .group .label { color: var(--ink-2); margin-bottom: 4px; }
+.sheet .item { min-height: 40px; padding: 6px 0; font-size: .9375rem; }
+.sheet .item + .item { box-shadow: none; }
+.sheet .item svg.i { color: var(--ink-2); }
+.exported { position: fixed; inset: 0; z-index: 50; display: none; place-items: center; background: rgba(12,14,18,.35); }
+.exported .card { width: 700px; padding: 28px; display: grid; grid-template-columns: 200px minmax(0,1fr); gap: 24px; align-items: center; }
+.exported .card img { width: 200px; border-radius: 14px; display: block; }
+.share { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.share .field { flex: 1; min-width: 0; padding: 9px 14px; min-height: 0; font-size: .875rem; }
+.dl { display: flex; gap: 4px; margin-top: 10px; margin-left: -12px; }
+</style></head>
+<body>
+<header class="bar glass">
+  <button class="btn quiet icon" id="back"></button>
+  <div class="proj"><span class="n">The History of Espresso</span><span class="v">Version 3 · Saved</span></div>
+  <div class="spacer"></div>
+  <button class="btn quiet icon" id="undo"></button><button class="btn quiet icon" id="redo" style="opacity:.45"></button>
+  <button class="btn quiet" id="versions">Versions</button>
+  <span class="btn act-pill" id="actpill">2 in progress</span>
+  <button class="btn primary p-export"><span>Export MP4</span></button>
+  <button class="btn primary p-apply"><span>Apply 3 changes</span></button>
+  <button class="btn primary p-applying"><i class="fill" style="width:38%"></i><span>Applying changes · <span class="tc" style="font-size:.875rem">2:14</span></span></button>
+</header>
+
+<div class="editor">
+  <aside class="glass side">
+    <div class="scenes-panel">
+      <div class="seg tabs"><span class="on">Scenes</span><span>Narration</span><span>Music</span></div>
+      <div class="scenes">
+        <div class="scene"><div class="th"><img src="assets/esp-00.jpg" alt=""></div><div><div class="t">Scene 1</div><div class="c trunc">Steam, pressure, and a desperate need…</div></div></div>
+        <div class="scene"><div class="th"><img src="assets/esp-01.jpg" alt=""></div><div><div class="t">Scene 2</div><div class="c trunc">late 1800s Italy, coffee had a problem…</div></div></div>
+        <div class="scene"><div class="th"><img src="assets/esp-02.jpg" alt=""></div><div><div class="t">Scene 3</div><div class="c trunc">Angelo Moriondo saw an opportunity…</div></div></div>
+        <div class="scene"><div class="th"><img src="assets/esp-03.jpg" alt=""></div><div><div class="t">Scene 4</div><div class="c trunc">bulk coffee machine in Turin…</div></div></div>
+        <div class="scene on"><div class="th"><img src="assets/esp-04.jpg" alt=""></div><div><div class="t">Scene 5</div><div class="c trunc">through tightly packed grounds…</div></div><span class="edited"></span></div>
+        <div class="scene"><div class="th"><img src="assets/esp-05.jpg" alt=""></div><div><div class="t">Scene 6</div><div class="c trunc">Achille Gaggia changed everything…</div></div></div>
+        <div class="scene"><div class="th"><img src="assets/esp-06.jpg" alt=""></div><div><div class="t">Scene 7</div><div class="c trunc">coffee at pressures no steam boiler…</div></div></div>
+        <div class="scene"><div class="th"><img src="assets/esp-07.jpg" alt=""></div><div><div class="t">Scene 8</div><div class="c trunc">now call crema. Italian cafes became…</div></div></div>
+        <div class="scene"><div class="th"><img src="assets/esp-08.jpg" alt=""></div><div><div class="t">Scene 9</div><div class="c trunc">a quiet craftsman. Then espresso left…</div></div></div>
+        <div class="scene"><div class="th"><img src="assets/esp-09.jpg" alt=""></div><div><div class="t">Scene 10</div><div class="c trunc">that small cup conquered cafe menus…</div></div></div>
+      </div>
+      <div class="hint">
+        <p class="caption hint-default">Select a scene to change its words, image or motion.</p>
+        <p class="caption hint-drafts">3 changes not applied yet · scene 5 image, music, captions</p>
+        <button class="btn sm" style="margin-top:10px">Customize scene</button>
+      </div>
+    </div>
+    <div class="export-panel">
+      <h2 class="section">Export</h2>
+      <div class="seg tabs"><span class="on">Web</span><span>Social</span><span>Pro</span></div>
+      <p class="caption">1080p, H.264, 12 Mbps, stereo · <a href="#" style="color:var(--ink-1);font-weight:500">Customize</a></p>
+      <div class="list" style="margin-top:8px">
+        <div class="item"><div><div class="l">Captions</div><div class="c">Burned into the video</div></div><span class="toggle on"></span></div>
+        <div class="item"><div><div class="l">Poster as cover</div><div class="c">Shows before playback</div></div><span class="toggle on"></span></div>
+        <div class="item"><div><div class="l">Watermark</div><div class="c">Off</div></div><span class="toggle"></span></div>
+      </div>
+      <div style="margin-top:auto">
+        <p class="caption" style="margin-bottom:12px">Saves next to your other versions · about 2 minutes</p>
+        <button class="btn primary lg" style="width:100%"><span>Export MP4</span></button>
+      </div>
+    </div>
+  </aside>
+
+  <section class="stage">
+    <div class="preview">
+      <img src="assets/esp-04.jpg" alt="Scene 5: a barista places a small espresso cup on a marble counter">
+      <div class="cap">took seconds, not minutes.</div>
+    </div>
+    <div class="glass timeline">
+      <div class="transport">
+        <span class="tbtn" id="play"></span>
+        <span class="tc">00:12.4</span><span class="caption">/</span><span class="tc ink-2">00:59.4</span>
+        <span class="grow"></span>
+        <span class="caption"><span class="kbd">←</span> <span class="kbd">→</span> scene · <span class="kbd">space</span> play</span>
+        <span class="tbtn" id="cc"></span><span class="tbtn" id="vol"></span><span class="tbtn" id="full"></span>
+      </div>
+      <div class="track">
+        <div class="seg-clip"><img src="assets/esp-00.jpg" alt=""><span class="n">1</span></div>
+        <div class="seg-clip"><img src="assets/esp-01.jpg" alt=""><span class="n">2</span></div>
+        <div class="seg-clip"><img src="assets/esp-02.jpg" alt=""><span class="n">3</span></div>
+        <div class="seg-clip"><img src="assets/esp-03.jpg" alt=""><span class="n">4</span></div>
+        <div class="seg-clip on"><img src="assets/esp-04.jpg" alt=""><span class="n">5</span></div>
+        <div class="seg-clip"><img src="assets/esp-05.jpg" alt=""><span class="n">6</span></div>
+        <div class="seg-clip"><img src="assets/esp-06.jpg" alt=""><span class="n">7</span></div>
+        <div class="seg-clip"><img src="assets/esp-07.jpg" alt=""><span class="n">8</span></div>
+        <div class="seg-clip"><img src="assets/esp-08.jpg" alt=""><span class="n">9</span></div>
+        <div class="seg-clip"><img src="assets/esp-09.jpg" alt=""><span class="n">10</span></div>
+        <div class="head" style="left:21%"></div>
+      </div>
+      <div class="markers"><span style="left:0">Steam, pressure and the birth of espresso</span><span style="left:49%">From crema to the whole world</span></div>
+    </div>
+  </section>
+</div>
+
+<!-- Layer 2: scene customize popover (opens in place beside the scene list) -->
+<div class="glass elevated popover scene variant">
+  <div class="row between" style="margin-bottom:4px"><h2 class="section">Scene 5</h2><button class="btn quiet sm icon x"></button></div>
+  <div class="list">
+    <div class="item"><div class="label">Words</div><div class="field">through tightly packed grounds, and suddenly a single cup took seconds, not minutes.</div><p class="caption" style="margin-top:6px">Changing the words re-records the whole narration.</p></div>
+    <div class="item"><div class="label">Image</div><div class="field">A small marble-topped espresso bar in early 1900s Milan, a white-aproned barista setting down a tiny cup, morning light through tall windows.</div><p class="caption" style="margin-top:6px">Edited · regenerates this scene's image and motion when you apply changes.</p></div>
+    <div class="item"><div class="label">Motion</div><div class="field">Slow push-in toward the cup as the barista steps back, steam rising.</div></div>
+    <div class="item" style="display:flex"><div><div class="l">Current image</div><div class="c">From version 1</div></div><div class="seg sm"><span>Keep</span><span class="on">Regenerate</span></div></div>
+  </div>
+</div>
+
+<!-- Review changes sheet (keeps the preview visible) -->
+<div class="glass elevated sheet review">
+  <div class="row between"><h2 class="section">Apply 3 changes</h2><button class="btn quiet sm icon x"></button></div>
+  <p class="caption" style="margin-top:6px">About <span class="tc">$0.01</span> and 6 minutes. Version 3 stays exactly as it is.</p>
+  <div class="group"><div class="label">Regenerate</div><div class="list"><div class="item"><span class="row" id="r1">Scene 5 image</span></div><div class="item"><span class="row" id="r2">Scene 5 motion</span></div></div></div>
+  <div class="group"><div class="label">Keep</div><div class="list"><div class="item"><span class="row" id="k1">Narration and timing</span></div><div class="item"><span class="row" id="k2">9 scene images and clips</span></div><div class="item"><span class="row" id="k3">Poster</span></div></div></div>
+  <div class="group"><div class="label">Remove</div><div class="list"><div class="item"><span class="row" id="m1">Music</span></div></div></div>
+  <div class="group"><div class="label">Restyle</div><div class="list"><div class="item"><span class="row" id="s1">Captions, karaoke style</span></div></div></div>
+  <div class="row between" style="margin-top:auto"><button class="btn quiet">Cancel</button><button class="btn primary lg"><span>Apply changes</span></button></div>
+</div>
+
+<!-- Activity popover (opens from the "in progress" pill) -->
+<div class="glass elevated popover activity variant">
+  <h2 class="section" style="margin-bottom:6px">In progress</h2>
+  <div class="list">
+    <div class="item"><div class="grow"><div class="l">The History of Espresso</div><div class="c">Applying changes · scene 5 image</div><div class="progress" style="margin-top:8px"><i style="width:38%"></i></div></div><div class="col" style="align-items:flex-end;gap:6px"><span class="tc">2:14</span><button class="btn quiet sm">Cancel</button></div></div>
+    <div class="item"><div class="grow"><div class="l">Tokyo in 24 hours</div><div class="c">Waiting · starts after the current video</div></div><button class="btn quiet sm">Cancel</button></div>
+    <div class="item"><div class="grow"><div class="l">Why sourdough rises</div><div class="c">Interrupted before it finished · 6 of 8 images are done</div></div><button class="btn sm">Resume</button></div>
+  </div>
+  <p class="caption" style="margin-top:12px">Nothing restarts on its own. You can close this and keep editing.</p>
+</div>
+
+<!-- Export success moment -->
+<div class="exported">
+  <div class="glass elevated card">
+    <img src="assets/esp-poster.jpg" alt="">
+    <div>
+      <h2 class="title">Exported</h2>
+      <p class="caption" style="margin-top:6px"><span class="tc">reel-video.mp4</span> · <span class="tc">108 MB</span> · <span class="tc">00:59</span> · 1080p</p>
+      <div class="share"><div class="field trunc">reelmaestro.local/share/the-history-of-espresso</div><button class="btn sm" id="copy">Copy link</button></div>
+      <div class="dl"><button class="btn quiet sm">Poster</button><button class="btn quiet sm">Captions</button><button class="btn quiet sm">Description and chapters</button></div>
+      <div class="row" style="margin-top:18px;gap:10px"><button class="btn primary"><span>Download MP4</span></button><button class="btn quiet">Back to editing</button></div>
+    </div>
+  </div>
+</div>
+
+<script src="shell.js"></script>
+<script>
+  const set = (sel, id) => document.querySelectorAll(sel).forEach(el => el.insertAdjacentHTML('afterbegin', ic(id)));
+  set('#back', 'i-back'); set('#undo', 'i-undo'); set('#redo', 'i-redo'); set('#versions', 'i-layers'); set('#actpill', 'i-clock');
+  set('#play', 'i-pause'); set('#cc', 'i-cc'); set('#vol', 'i-vol'); set('#full', 'i-full'); set('.x', 'i-x'); set('#copy', 'i-copy');
+  set('#r1', 'i-image'); set('#r2', 'i-film'); set('#k1', 'i-mic'); set('#k2', 'i-image'); set('#k3', 'i-doc'); set('#m1', 'i-music'); set('#s1', 'i-text');
+</script>
+</body></html>

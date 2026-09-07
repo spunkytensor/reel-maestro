@@ -1,0 +1,62 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Settings — Reel Maestro Studio</title><link rel="stylesheet" href="studio.css">
+<style>
+main { position: fixed; inset: 92px 16px 16px; overflow: hidden; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 24px 8px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 24px; align-items: start; }
+.group { padding: 12px 22px; }
+.group h2 { padding: 8px 0 4px; }
+.about { display: flex; align-items: center; gap: 14px; padding: 10px 0; }
+.about .mk { width: 40px; height: 40px; border-radius: 12px; background: rgba(255,255,255,.85); display: grid; place-items: center; }
+.about .mk img { width: 32px; height: 32px; }
+</style></head>
+<body>
+<header class="bar glass">
+  <div class="brand" id="brand"><span class="name">Reel Maestro</span><span class="by">by Spunky Tensor</span></div>
+  <div class="spacer"></div>
+  <nav class="nav row"><a href="#">Projects</a><a href="#" class="on">Settings</a></nav>
+</header>
+<main><div class="wrap">
+  <h1 class="title">Settings</h1>
+  <div class="grid">
+    <section class="glass group">
+      <h2 class="section">Appearance</h2>
+      <div class="list">
+        <div class="item"><div><div class="l">Theme</div><div class="c">System follows your device</div></div><div class="seg sm" id="theme"><span>System</span><span>Light</span><span>Dark</span></div></div>
+        <div class="item"><div><div class="l">Reduce transparency</div><div class="c">Solid panels, no blur</div></div><span class="toggle" id="solid"></span></div>
+        <div class="item"><div><div class="l">Reduce motion</div><div class="c">Follows your device</div></div><span class="caption">On</span></div>
+      </div>
+    </section>
+    <section class="glass group">
+      <h2 class="section">Generation</h2>
+      <div class="list">
+        <div class="item"><div><div class="l">AI provider</div><div class="c">Your key is stored privately and never shown again</div></div><div class="row"><span class="pill ok"><span class="dot"></span>Connected</span><button class="btn quiet sm">Change key</button></div></div>
+        <div class="item"><div><div class="l">Default format</div></div><div class="seg sm"><span class="on">Vertical</span><span>Widescreen</span></div></div>
+        <div class="item"><div><div class="l">Default quality</div></div><div class="seg sm"><span>Quick draft</span><span class="on">Balanced</span><span>Best</span></div></div>
+        <div class="item"><div><div class="l">Spending limit</div><div class="c">Per video, checked before anything starts</div></div><span class="tc">$5.00</span></div>
+      </div>
+    </section>
+    <section class="glass group">
+      <h2 class="section">Videos</h2>
+      <div class="list">
+        <div class="item"><div><div class="l">Saved to</div><div class="c">./out on this computer · <span class="tc">1.9 GB</span> · 6 videos</div></div><button class="btn quiet sm">Rescan</button></div>
+        <div class="item"><div><div class="l">Export watermark</div><div class="c">Off · add a PNG to turn it on</div></div><span class="toggle"></span></div>
+        <div class="item"><div><div class="l">Keep earlier versions</div><div class="c">Every applied change is kept as its own version</div></div><span class="toggle on"></span></div>
+      </div>
+    </section>
+    <section class="glass group">
+      <h2 class="section">About</h2>
+      <div class="about"><span class="mk"><img src="assets/spunky.png" alt="Spunky Tensor"></span><div><div class="l" style="font-weight:500">Reel Maestro Studio 0.1</div><div class="caption">by Spunky Tensor</div></div></div>
+      <div class="list">
+        <div class="item"><div class="l">Licenses</div><button class="btn quiet sm">View</button></div>
+        <div class="item"><div class="l">Help</div><button class="btn quiet sm">Open</button></div>
+      </div>
+    </section>
+  </div>
+</div></main>
+<script src="shell.js"></script>
+<script>
+  document.getElementById('brand').insertAdjacentHTML('afterbegin', brandMark);
+  const q = new URLSearchParams(location.search); const t = q.get('theme') === 'dark' ? 2 : 1;
+  document.querySelectorAll('#theme span')[t].classList.add('on'); if (q.get('solid')) document.getElementById('solid').classList.add('on');
+</script>
+</body></html>

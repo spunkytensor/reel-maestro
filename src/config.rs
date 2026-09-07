@@ -424,7 +424,9 @@ impl Config {
             bail!("--video-wait-timeout must be between 1 and 1440 minutes");
         }
         let api_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
-        if api_key.is_empty() && !(video_provider == VideoProvider::Local && cli.from.is_some()) {
+        let keyless =
+            cli.studio_estimate || (cli.dry_run && cli.from.is_none()) || cli.from.is_some();
+        if api_key.is_empty() && !keyless {
             bail!("OPENROUTER_API_KEY is not set; only a local-video --from resume with all hosted assets already present can run without it");
         }
 
@@ -592,8 +594,9 @@ impl Config {
                 .caption_font
                 .clone()
                 .or_else(|| std::env::var("REELMAESTRO_CAPTION_FONT").ok()),
-            no_captions: cli.no_captions || env_flag("REELMAESTRO_NO_CAPTIONS"),
-            no_narration: cli.no_narration || env_flag("REELMAESTRO_NO_NARRATION"),
+            no_captions: !cli.captions && (cli.no_captions || env_flag("REELMAESTRO_NO_CAPTIONS")),
+            no_narration: !cli.narration
+                && (cli.no_narration || env_flag("REELMAESTRO_NO_NARRATION")),
             scene_seconds: cli
                 .scene_seconds
                 .or_else(|| {

@@ -1,5 +1,7 @@
 # Reel Maestro
 
+![Reel Maestro Studio editor showing an espresso video, scene list, and timeline](docs/studio-screenshot.png)
+
 [![CI](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/spunkytensor/reel-maestro/actions/workflows/ci.yml)
 [![CVE Audit](https://github.com/spunkytensor/reel-maestro/actions/workflows/security.yml/badge.svg)](https://github.com/spunkytensor/reel-maestro/actions/workflows/security.yml)
 
@@ -11,7 +13,10 @@ Reel Maestro is a small, single-binary Rust CLI that turns an idea into a video 
 **AI-generated narration audio, images, and burned-in captions** — all through a single
 **OpenRouter API key**. It makes both vertical (9:16) TikTok/Reels/Shorts reels and, with
 `--format youtube`, landscape (16:9) long-form YouTube videos with a chaptered script and
-pastable metadata. No Docker, no server, no dashboard.
+pastable metadata. The native CLI needs no Docker or server. An optional local browser interface,
+[Reel Maestro Studio](studio/README.md), provides approved generation, scene editing/selective
+regeneration, immutable versions, uploads, playback, and MP4 exports. A self-contained
+[Docker installation](docs/container.md) includes the CLI, Studio, and local media dependencies.
 
 This project is open source under the [Apache License 2.0](LICENSE). Contributions are
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.

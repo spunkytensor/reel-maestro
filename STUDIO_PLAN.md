@@ -1,7 +1,10 @@
 # Reel Maestro Studio — implementation plan
 
-Status: proposed; planning only. No frontend, server, Docker image, or new CLI behavior is
-implemented by this document. Branch: `plan/reel-maestro-studio`. No PR is requested.
+Status: v1 implementation delivered in the working checkout. Studio, immutable selective revisions,
+and Docker delivery are implemented. See [`studio/IMPLEMENTATION.md`](studio/IMPLEMENTATION.md)
+for the completed checklist, executed offline verification, and intentional v1 boundaries. This
+document retains the design and acceptance rationale; exact endpoints/commands are documented in
+[`studio/README.md`](studio/README.md) and [`docs/container.md`](docs/container.md). No PR is requested.
 
 ## Outcome and scope
 
@@ -90,6 +93,10 @@ that identity: restrained orange primary actions, deep navy/ink surfaces, genero
 and media-led composition. Keep the playful illustration in onboarding and empty states;
 use a compact readable Reel Maestro identity in the navigation rather than shrinking the
 entire detailed illustration into an unreadable icon.
+
+The approved visual system is specified in `docs/design/DESIGN_GUIDE.md`, with rendered mockups in
+`docs/design/`. Where the notes below and that guide differ, the guide wins; this section keeps the
+behavioural requirements.
 
 The local `watermark_transparent_spunkytensor.png` depicts a lightning bolt and orbital rings.
 It is currently untracked user material: do not modify or implicitly commit it. During asset
