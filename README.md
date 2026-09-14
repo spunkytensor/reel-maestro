@@ -13,6 +13,8 @@ Reel Maestro is a small, single-binary Rust CLI that turns an idea into a video 
 `--format youtube`, landscape (16:9) long-form YouTube videos with a chaptered script and
 pastable metadata. No Docker, no server, no dashboard.
 
+![Reel Maestro video library showing saved widescreen and vertical videos](screenshot.png)
+
 This project is open source under the [Apache License 2.0](LICENSE). Contributions are
 welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
 
