@@ -1,0 +1,51 @@
+name: Studio
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  studio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - name: Install locked dependencies
+        run: npm --prefix studio ci
+      - name: Install offline media and browser tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          npm --prefix studio exec -- playwright-core install --with-deps chromium
+      - name: Typecheck and build
+        run: npm --prefix studio run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.88'
+      - name: Build native offline revision engine
+        run: cargo build --locked
+      - name: Formatting
+        run: npm --prefix studio run format:check
+      - name: Backend and browser fixtures (no paid APIs)
+        run: |
+          npm --prefix studio test
+          npm --prefix studio run test:browser
+      - name: Dependency audit
+        run: npm --prefix studio audit
+      - name: Retain browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: studio-browser-screenshots
+          path: out/studio-verification/
+          if-no-files-found: warn

@@ -14,7 +14,9 @@ mod metadata;
 mod model;
 mod music;
 mod openrouter;
+mod revision;
 mod script;
+mod studio;
 mod transcribe;
 mod tts;
 mod video;
@@ -22,15 +24,51 @@ mod video;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
 
 use config::Config;
 use openrouter::OpenRouter;
 
 /// Generate a vertical short video from a topic, an article URL, or your own script.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "reelmaestro", version, about)]
 pub struct Cli {
+    /// Inspect a run read-only and print its normalized script, hashes, and outputs as JSON.
+    #[arg(long, value_name = "RUN_DIR")]
+    studio_inspect_run: Option<PathBuf>,
+
+    /// Read a revision request and print exactly one side-effect-free Plan v1 JSON object.
+    #[arg(long, value_name = "REQUEST.json", conflicts_with_all = ["revision_execute", "revision_recover"])]
+    revision_plan: Option<PathBuf>,
+
+    /// Execute an approved immutable revision plan.
+    #[arg(long, value_name = "PLAN.json", conflicts_with_all = ["revision_plan", "revision_recover"])]
+    revision_execute: Option<PathBuf>,
+
+    /// Explicitly resume an interrupted revision with the exact same approved plan.
+    #[arg(long, value_name = "PLAN.json", conflicts_with_all = ["revision_plan", "revision_execute"])]
+    revision_recover: Option<PathBuf>,
+
+    /// Approval hash returned by --revision-plan (required by execute/recover).
+    #[arg(long, value_name = "sha256:...")]
+    approval_hash: Option<String>,
+
+    /// Emit versioned NDJSON events on stdout; diagnostics remain on stderr.
+    #[arg(long)]
+    events_json: bool,
+
+    /// Print the versioned Studio CLI schema as JSON and exit.
+    #[arg(long, conflicts_with = "studio_estimate")]
+    studio_schema: bool,
+
+    /// Print a versioned fresh-generation cost estimate as JSON and exit.
+    #[arg(long, conflicts_with = "studio_schema")]
+    studio_estimate: bool,
+
+    /// Ignore .env files, including those in parent directories (used by Studio approvals).
+    #[arg(long)]
+    no_dotenv: bool,
+
     /// Show detailed local video phases and denoising counters.
     #[arg(long)]
     verbose: bool,
@@ -77,6 +115,10 @@ pub struct Cli {
     #[arg(long)]
     music: Option<PathBuf>,
 
+    /// Soundtrack intent for a revision. Native resumes retain the existing soundtrack by default.
+    #[arg(long, value_enum)]
+    music_action: Option<MusicAction>,
+
     /// How the soundtrack sits under the narration.
     #[arg(long, value_enum, default_value_t = MixMode::Duck)]
     mix: MixMode,
@@ -98,6 +140,26 @@ pub struct Cli {
     /// Render only the first N scenes as video clips; the rest stay Ken Burns stills.
     #[arg(long)]
     video_scenes: Option<usize>,
+
+    /// Render one stable scene ID as video. Repeat to select arbitrary scenes.
+    #[arg(long = "video-scene-id", requires = "from")]
+    video_scene_ids: Vec<String>,
+
+    /// Force still regeneration for a stable scene ID. Repeat for multiple scenes.
+    #[arg(long = "regenerate-image-scene-id", requires = "from")]
+    regenerate_image_scene_ids: Vec<String>,
+
+    /// Intentionally retain an older still despite changed inputs, preserving its provenance.
+    #[arg(long = "keep-image-scene-id", requires = "from")]
+    keep_image_scene_ids: Vec<String>,
+
+    /// Force clip regeneration for a selected stable scene ID.
+    #[arg(long = "regenerate-video-scene-id", requires = "from")]
+    regenerate_video_scene_ids: Vec<String>,
+
+    /// Intentionally retain an older selected clip despite changed inputs.
+    #[arg(long = "keep-video-scene-id", requires = "from")]
+    keep_video_scene_ids: Vec<String>,
 
     /// Hosted video clip resolution (720p or 1080p). Defaults from the quality tier.
     /// For local video use --video-size instead.
@@ -133,12 +195,20 @@ pub struct Cli {
     video_wait_timeout: Option<u64>,
 
     /// Don't burn captions into the video.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "captions")]
     no_captions: bool,
 
-    /// Disable cross-dissolve transitions (use hard cuts between every scene).
+    /// Burn captions into a resumed revision, overriding a parent's disabled setting.
     #[arg(long)]
+    captions: bool,
+
+    /// Disable cross-dissolve transitions (use hard cuts between every scene).
+    #[arg(long, conflicts_with = "dissolve")]
     no_dissolve: bool,
+
+    /// Enable scripted cross-dissolves on a resumed revision.
+    #[arg(long)]
+    dissolve: bool,
 
     /// Per-scene consistency validation: generate candidates and keep the one a vision model judges
     /// most consistent, re-rolling drifting frames. `off` = one candidate, no judging; `2` or `3` =
@@ -163,16 +233,24 @@ pub struct Cli {
     minutes: Option<f64>,
 
     /// Disable the cinematic colour grade / film grain applied to the final video.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "grade")]
     no_grade: bool,
+
+    /// Enable the cinematic grade on a resumed revision.
+    #[arg(long)]
+    grade: bool,
 
     /// Cross-dissolve length in seconds for scriptwriter-flagged still-to-still transitions.
     #[arg(long, default_value_t = 0.5)]
     dissolve_seconds: f64,
 
     /// Don't generate spoken narration — produce a silent or music-only video.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "narration")]
     no_narration: bool,
+
+    /// Enable narration on a resumed revision whose parent was silent.
+    #[arg(long)]
+    narration: bool,
 
     /// Per-scene seconds when narration is disabled (default 4.0).
     #[arg(long)]
@@ -183,12 +261,20 @@ pub struct Cli {
     poster_scene: Option<usize>,
 
     /// Generate poster.jpg but don't embed it as the MP4's cover art.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "embed_poster")]
     no_embed_poster: bool,
 
-    /// Disable automatic character-consistency conditioning across scenes.
+    /// Embed the poster in a resumed revision.
     #[arg(long)]
+    embed_poster: bool,
+
+    /// Disable automatic character-consistency conditioning across scenes.
+    #[arg(long, conflicts_with = "consistency")]
     no_consistency: bool,
+
+    /// Enable entity consistency on a resumed revision.
+    #[arg(long)]
+    consistency: bool,
 
     /// Use this image as the recurring character reference (overrides the generated portrait).
     #[arg(long)]
@@ -236,8 +322,16 @@ pub struct Cli {
     caption_font: Option<String>,
 
     /// Disable final audio normalization to the social-platform −14 LUFS target.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "loudnorm")]
     no_loudnorm: bool,
+
+    /// Enable final loudness normalization on a resumed revision.
+    #[arg(long)]
+    loudnorm: bool,
+
+    /// Final H.264 encoding profile: web (smaller), social (default), or pro (higher quality).
+    #[arg(long, value_enum, default_value_t = ExportPreset::Social)]
+    export_preset: ExportPreset,
 }
 
 /// Parse `--validate-scene`: `off` → 0 (validation disabled, one candidate); `2`/`3` → that many
@@ -250,6 +344,27 @@ pub(crate) fn parse_validate_scene(s: &str) -> Result<usize, String> {
         "3" => Ok(3),
         _ => Err(format!("expected `off`, `2`, or `3` (got {s:?})")),
     }
+}
+
+fn validate_stable_scene_args(cli: &Cli, script: &model::Script) -> Result<()> {
+    let known: std::collections::HashSet<&str> = script
+        .scenes
+        .iter()
+        .map(|scene| scene.id.as_str())
+        .collect();
+    for id in cli
+        .video_scene_ids
+        .iter()
+        .chain(&cli.regenerate_image_scene_ids)
+        .chain(&cli.keep_image_scene_ids)
+        .chain(&cli.regenerate_video_scene_ids)
+        .chain(&cli.keep_video_scene_ids)
+    {
+        if !known.contains(id.as_str()) {
+            bail!("unknown stable scene id {id:?}");
+        }
+    }
+    Ok(())
 }
 
 /// Upper-bound paid-work estimate available before a fresh script has established exact scenes
@@ -270,7 +385,7 @@ fn preflight_cost_estimate(cli: &Cli, cfg: &Config) -> config::CostEstimate {
     let image_count = if cli.no_images {
         0
     } else {
-        scene_count * candidates_per_scene + 1 + usize::from(!cli.no_consistency)
+        scene_count * candidates_per_scene + 1 + usize::from(cli.consistency || !cli.no_consistency)
     };
     let video_count = match cli.video_scenes {
         Some(count) => count.min(scene_count),
@@ -314,12 +429,21 @@ fn resume_cost_estimate(
     let candidates_per_scene = cfg.validate_scene.max(1);
     let image_count = images::missing_scenes(dir, n).len() * candidates_per_scene
         + usize::from(!dir.join("poster.jpg").exists());
-    let video_count = match cli.video_scenes {
-        Some(count) => count.min(n),
-        None if cli.video => n,
-        None => 0,
+    let video_indices: Vec<usize> = if !cli.video_scene_ids.is_empty() {
+        cli.video_scene_ids
+            .iter()
+            .filter_map(|id| script.scenes.iter().position(|scene| &scene.id == id))
+            .collect()
+    } else {
+        let count = match cli.video_scenes {
+            Some(count) => count.min(n),
+            None if cli.video => n,
+            None => 0,
+        };
+        (0..count).collect()
     };
-    let to_make: Vec<usize> = (0..video_count)
+    let to_make: Vec<usize> = video_indices
+        .into_iter()
         .filter(|&i| !dir.join(format!("scene-{i:02}.mp4")).exists())
         .collect();
     let total_s = ffmpeg::duration_s(&dir.join("audio.mp3")).unwrap_or(60.0);
@@ -332,7 +456,7 @@ fn resume_cost_estimate(
         images: config::image_cost(&cfg.image_model) * image_count as f64,
         video: config::video_cost_per_second(video_model, &cfg.video_resolution)
             * video_seconds as f64,
-        music: if cli.music_gen {
+        music: if cli.music_gen || cli.music_action == Some(MusicAction::Regenerate) {
             config::music_cost()
         } else {
             0.0
@@ -385,10 +509,57 @@ enum MixMode {
     Low,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum MusicAction {
+    Keep,
+    Remove,
+    Regenerate,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ExportPreset {
+    /// Browser-friendly H.264, CRF 24, fast encoder preset.
+    Web,
+    /// Platform-ready H.264, CRF 20, veryfast encoder preset.
+    Social,
+    /// High-quality H.264 master, CRF 17, slow encoder preset.
+    Pro,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ = dotenvy::dotenv();
     let cli = Cli::parse();
+    if !cli.no_dotenv {
+        let _ = dotenvy::dotenv();
+    }
+    if cli.studio_schema {
+        studio::print_schema(Cli::command())?;
+        return Ok(());
+    }
+    if let Some(source) = &cli.studio_inspect_run {
+        revision::inspect_run(source)?;
+        return Ok(());
+    }
+    if let Some(request) = &cli.revision_plan {
+        revision::print_plan(request)?;
+        return Ok(());
+    }
+    if let Some(plan) = cli
+        .revision_execute
+        .as_ref()
+        .or(cli.revision_recover.as_ref())
+    {
+        revision::execute(
+            plan,
+            cli.approval_hash.as_deref(),
+            cli.revision_recover.is_some(),
+        )?;
+        return Ok(());
+    }
+    if cli.events_json {
+        revision::execute_fresh_events()?;
+        return Ok(());
+    }
     if let Err(e) = run(&cli).await {
         eprintln!("\nerror: {e:#}");
         std::process::exit(1);
@@ -397,6 +568,9 @@ async fn main() -> Result<()> {
 }
 
 async fn run(cli: &Cli) -> Result<()> {
+    if cli.studio_estimate && cli.from.is_some() {
+        bail!("--studio-estimate only supports fresh generation; --from is not allowed");
+    }
     // ffmpeg's atempo filter only accepts 0.5–2.0; reject out-of-range speeds
     // upfront so the user gets a clear message instead of a cryptic ffmpeg error.
     // (music_volume needs no check — it's clamped to >= 0 at the ffmpeg call.)
@@ -404,6 +578,10 @@ async fn run(cli: &Cli) -> Result<()> {
         bail!("--speed must be between 0.5 and 2.0 (got {})", cli.speed);
     }
     let mut cfg = Config::load(cli)?;
+    if cli.studio_estimate {
+        studio::print_estimate(&preflight_cost_estimate(cli, &cfg))?;
+        return Ok(());
+    }
     if cfg.video_provider == config::VideoProvider::Local
         && cli.from.is_none()
         && (cli.video || cli.video_scenes.is_some())
@@ -495,19 +673,26 @@ async fn run(cli: &Cli) -> Result<()> {
             .out
             .join(format!("{}_{}", timestamp(), slug(&script.title)));
         std::fs::create_dir_all(&dir)?;
+        let mut script = script;
+        script.ensure_scene_ids();
         std::fs::write(dir.join("script.json"), serde_json::to_vec_pretty(&script)?)?;
         (script, dir)
     };
+    // Advisory OS lock prevents native resumes and Studio workers from mutating the same writable
+    // run directory concurrently. The lock is released automatically on process exit/crash.
+    let _run_lock = resume.then(|| revision::lock_run(&dir)).transpose()?;
 
     // Fold any legacy single-`cast` string (older resumed `script.json`) into `characters` so the
     // rest of the pipeline only deals with the multi-character/location model.
     script.normalize_entities();
+    script.ensure_scene_ids();
+    validate_stable_scene_args(cli, &script)?;
 
     // A local-video resume may intentionally have no OpenRouter credential. Fail locally before
     // any hosted stage if the run folder is incomplete instead of accidentally making a request.
     if resume && cfg.api_key.is_empty() {
         let missing_images = images::missing_scenes(&dir, script.scenes.len());
-        if !dir.join("audio.mp3").exists()
+        if (!cfg.no_narration && !dir.join("audio.mp3").exists())
             || !dir.join("poster.jpg").exists()
             || !missing_images.is_empty()
         {
@@ -540,6 +725,7 @@ async fn run(cli: &Cli) -> Result<()> {
         }
         cfg.format
     };
+    cfg.format = format;
     let canvas = config::canvas(format);
     cfg.apply_video_format(format);
     if cfg.video_provider == config::VideoProvider::Local
@@ -559,6 +745,7 @@ async fn run(cli: &Cli) -> Result<()> {
         && format == config::Format::Youtube
     {
         or.video_model = "alibaba/wan-2.6".to_string();
+        cfg.video_model = or.video_model.clone();
     }
 
     // Cost guard for resumes: only the assets still missing from the folder (or newly requested,
@@ -594,10 +781,7 @@ async fn run(cli: &Cli) -> Result<()> {
     // words.json always describe the same audio).
     let audio = dir.join("audio.mp3");
     let words_path = dir.join("words.json");
-    let words: Vec<model::WordTiming> = if resume {
-        if !audio.exists() {
-            bail!("{} has no audio.mp3 to resume from", dir.display());
-        }
+    let words: Vec<model::WordTiming> = if resume && audio.exists() {
         match std::fs::read(&words_path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .with_context(|| format!("could not parse {}", words_path.display()))?,
@@ -671,7 +855,7 @@ async fn run(cli: &Cli) -> Result<()> {
             &script.characters,
             &script.locations,
             cli.character_ref.as_deref(),
-            !cli.no_consistency,
+            cli.consistency || !cli.no_consistency,
             cfg.validate_scene,
             canvas,
             &dir,
@@ -684,7 +868,7 @@ async fn run(cli: &Cli) -> Result<()> {
             script.scenes.len(),
             or.image_model
         );
-        let consistency = !cli.no_consistency;
+        let consistency = cli.consistency || !cli.no_consistency;
         if consistency
             && (cli.character_ref.is_some()
                 || !script.characters.is_empty()
@@ -735,24 +919,38 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // 5. Video scenes (optional, non-fatal) -----------------------------------
     let durations = assemble::scene_durations(&script.scenes, &words, &audio)?;
-    let video_count = match cli.video_scenes {
-        Some(n) => n.min(script.scenes.len()),
-        None if cli.video => script.scenes.len(),
-        None => 0,
+    let video_indices: Vec<usize> = if !cli.video_scene_ids.is_empty() {
+        cli.video_scene_ids
+            .iter()
+            .map(|id| {
+                script
+                    .scenes
+                    .iter()
+                    .position(|scene| &scene.id == id)
+                    .ok_or_else(|| anyhow::anyhow!("unknown --video-scene-id {id:?}"))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        let count = match cli.video_scenes {
+            Some(n) => n.min(script.scenes.len()),
+            None if cli.video => script.scenes.len(),
+            None => 0,
+        };
+        (0..count).collect()
     };
-    let clips = if video_count > 0 {
+    let clips = if !video_indices.is_empty() {
         // Only scenes whose clip is missing get (re)generated and billed; existing scene-NN.mp4
         // clips are reused (delete one to regenerate just that scene). Estimate the real cost.
-        let to_make: Vec<usize> = (0..video_count)
+        let to_make: Vec<usize> = video_indices
+            .iter()
+            .copied()
             .filter(|&i| !dir.join(format!("scene-{i:02}.mp4")).exists())
             .collect();
         if to_make.is_empty() {
-            println!(
-                "→ reusing {video_count} existing video clip(s) (delete a scene-NN.mp4 to regenerate it)"
-            );
+            println!("→ reusing {} existing video clip(s)", video_indices.len());
         } else {
             let secs = video::billed_seconds_for(&or.video_model, &durations, &to_make);
-            let reused = video_count - to_make.len();
+            let reused = video_indices.len() - to_make.len();
             let reuse_note = if reused > 0 {
                 format!(", reusing {reused}")
             } else {
@@ -779,7 +977,7 @@ async fn run(cli: &Cli) -> Result<()> {
             &script.locations,
             &images,
             &durations,
-            video_count,
+            &video_indices,
             &cfg.video_resolution,
             &dir,
             &cfg,
@@ -791,14 +989,19 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // 6. Soundtrack (optional, non-fatal) -------------------------------------
     // On resume, reuse the preview's soundtrack unless a new one was explicitly requested.
-    let music = if resume && cli.music.is_none() && !cli.music_gen {
-        existing_music(&dir)
-    } else {
-        resolve_music(cli, &or, &script.music_prompt, &dir).await
+    let music = match cli.music_action {
+        Some(MusicAction::Remove) => None,
+        Some(MusicAction::Keep) => existing_music(&dir),
+        Some(MusicAction::Regenerate) => {
+            resolve_music(cli, &or, &script.music_prompt, &dir, true).await
+        }
+        None if resume && cli.music.is_none() && !cli.music_gen => existing_music(&dir),
+        None => resolve_music(cli, &or, &script.music_prompt, &dir, false).await,
     };
 
     // 7. Assemble -------------------------------------------------------------
     println!("→ assembling video ...");
+    ffmpeg::set_export_preset(cli.export_preset);
     let duck = cli.mix == MixMode::Duck;
     let reel = assemble::build(assemble::BuildOptions {
         dir: &dir,
@@ -810,11 +1013,11 @@ async fn run(cli: &Cli) -> Result<()> {
         music: music.as_deref(),
         duck,
         music_volume: cli.music_volume,
-        loudnorm: !cli.no_loudnorm,
+        loudnorm: cli.loudnorm || !cli.no_loudnorm,
         captions_on: !cfg.no_captions,
-        dissolve: !cli.no_dissolve,
+        dissolve: cli.dissolve || !cli.no_dissolve,
         dissolve_seconds: cli.dissolve_seconds,
-        grade: !cli.no_grade,
+        grade: cli.grade || !cli.no_grade,
         canvas,
         caption_style: captions::CaptionStyle::for_format_and_preset(
             format,
@@ -869,7 +1072,7 @@ async fn run(cli: &Cli) -> Result<()> {
         }
     }
     if poster.exists() {
-        if !cli.no_embed_poster {
+        if cli.embed_poster || !cli.no_embed_poster {
             // Embed into whichever reel was just built (reel.mp4 or the video upgrade reel-video.mp4).
             let reel_name = reel
                 .file_name()
@@ -881,6 +1084,9 @@ async fn run(cli: &Cli) -> Result<()> {
         }
         println!("  poster: {}", poster.display());
     }
+
+    ffmpeg::validate_video(&reel)?;
+    revision::write_native_manifest(&dir, &script, cli, &cfg)?;
 
     println!("\n✓ done: {}", reel.display());
     Ok(())
@@ -1086,11 +1292,12 @@ async fn resolve_music(
     or: &OpenRouter,
     music_prompt: &str,
     dir: &std::path::Path,
+    force_generate: bool,
 ) -> Option<PathBuf> {
     if let Some(file) = &cli.music {
         return Some(file.clone());
     }
-    if !cli.music_gen {
+    if !cli.music_gen && !force_generate {
         return None;
     }
     // Lyria bills a flat fee per track (unlike Veo's per-second cost), so the estimate is a

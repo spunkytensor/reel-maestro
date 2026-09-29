@@ -1,0 +1,44 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Projects — Reel Maestro Studio</title><link rel="stylesheet" href="studio.css">
+<style>
+main { position: fixed; inset: 92px 16px 16px; overflow: hidden; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 24px 8px; }
+.head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px 24px; }
+.tile { position: relative; aspect-ratio: 16/9; border-radius: 20px; overflow: hidden; background: var(--fill); }
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile .blur { position: absolute; inset: -20px; filter: blur(24px) brightness(.75); }
+.tile .fit { position: absolute; inset: 12px; display: grid; place-items: center; }
+.tile .fit img { height: 100%; width: auto; border-radius: 8px; }
+.tile .pill { position: absolute; left: 12px; bottom: 12px; }
+.tile.soft img { opacity: .35; }
+.meta { margin-top: 12px; }
+.meta .c { margin-top: 2px; }
+.search { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 999px; background: var(--fill); color: var(--ink-3); width: 260px; font-size: .9375rem; }
+</style></head>
+<body>
+<header class="bar glass">
+  <div class="brand" id="brand"><span class="name">Reel Maestro</span><span class="by">by Spunky Tensor</span></div>
+  <div class="spacer"></div>
+  <nav class="nav row"><a href="#" class="on">Projects</a><a href="#">Settings</a></nav>
+  <div class="search">${ic}<span>Search</span></div>
+  <button class="btn primary"><span>New video</span></button>
+</header>
+<main>
+  <div class="wrap">
+    <div class="head">
+      <div><h1 class="title">Projects</h1><p class="caption" style="margin-top:4px">6 videos · saved on this computer</p></div>
+      <div class="seg"><span class="on">All</span><span>Widescreen</span><span>Vertical</span></div>
+    </div>
+    <div class="grid">
+      <a href="#" class="proj"><div class="tile"><img src="assets/esp-poster.jpg" alt=""></div><div class="meta"><div class="label">The History of Espresso</div><div class="caption c">Widescreen · <span class="tc">00:59</span> · Version 3</div></div></a>
+      <a href="#" class="proj"><div class="tile"><div class="blur"><img src="assets/cre-poster.jpg" alt=""></div><div class="fit"><img src="assets/cre-poster.jpg" alt=""></div></div><div class="meta"><div class="label">Expectation vs. Reality: The Creator Life</div><div class="caption c">Vertical · <span class="tc">00:35</span> · Version 1</div></div></a>
+      <a href="#" class="proj"><div class="tile" style="background:linear-gradient(135deg,var(--fill-2),var(--fill))"><span class="pill"><span class="dot"></span>Generating · <span class="tc">4:31</span></span></div><div class="meta"><div class="label">Why sourdough rises</div><div class="caption c">Vertical · images 6 of 8</div></div></a>
+      <a href="#" class="proj"><div class="tile"><span class="pill">Waiting</span></div><div class="meta"><div class="label">Tokyo in 24 hours</div><div class="caption c">Widescreen · 3 minutes · starts after the current video</div></div></a>
+      <a href="#" class="proj"><div class="tile soft"><img src="assets/esp-07.jpg" alt=""><span class="pill">Imported</span></div><div class="meta"><div class="label">Coffee myths, debunked</div><div class="caption c">Widescreen · from an earlier version of Reel Maestro</div></div></a>
+      <a href="#" class="proj"><div class="tile"><span class="pill warn"><span class="dot"></span>Needs attention</span></div><div class="meta"><div class="label">Mars weather report</div><div class="caption c">Vertical · narration was not finished</div></div></a>
+    </div>
+  </div>
+</main>
+<script src="shell.js"></script>
+<script>document.getElementById('brand').insertAdjacentHTML('afterbegin', brandMark); document.querySelector('.search').firstChild.replaceWith(document.createRange().createContextualFragment(ic('i-search')));</script>
+</body></html>

@@ -14,6 +14,19 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use crate::config::Canvas;
+use crate::ExportPreset;
+
+thread_local! {
+    static EXPORT_PRESET: std::cell::Cell<ExportPreset> = const { std::cell::Cell::new(ExportPreset::Social) };
+}
+
+pub fn set_export_preset(preset: ExportPreset) {
+    EXPORT_PRESET.set(preset);
+}
+
+pub fn export_preset() -> ExportPreset {
+    EXPORT_PRESET.get()
+}
 
 /// The unified cinematic "house grade" applied to the whole reel: a gentle contrast/saturation
 /// lift, a soft S-curve, a subtle vignette, and light temporal film grain. Ties independently
@@ -66,6 +79,41 @@ pub fn duration_s(path: &Path) -> Result<f64> {
     text.trim()
         .parse::<f64>()
         .with_context(|| format!("could not parse duration from ffprobe output: {text:?}"))
+}
+
+/// Verify a completed output has a decodable video stream and a positive finite duration.
+pub fn validate_video(path: &Path) -> Result<()> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type:format=duration",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .context("failed to launch ffprobe for completed output validation")?;
+    if !out.status.success() {
+        bail!(
+            "ffprobe rejected completed output: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let probe: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .context("ffprobe returned invalid completed-output JSON")?;
+    let has_video = probe["streams"]
+        .as_array()
+        .is_some_and(|streams| streams.iter().any(|stream| stream["codec_type"] == "video"));
+    let duration = probe["format"]["duration"]
+        .as_str()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    if !has_video || !duration.is_finite() || duration <= 0.0 {
+        bail!("completed output has no video stream or positive finite duration");
+    }
+    Ok(())
 }
 
 /// Transcode an audio file to mp3, optionally changing tempo (pitch-preserving).
@@ -229,6 +277,8 @@ pub struct RenderReelOptions<'a> {
     pub canvas: Canvas,
     /// Optional watermark image path (PNG with alpha), overlaid bottom-right, scaled to the canvas.
     pub watermark: Option<&'a str>,
+    /// Bounded H.264 encoding profile.
+    pub export_preset: ExportPreset,
     /// Output MP4 filename to write.
     pub output: &'a str,
 }
@@ -576,9 +626,16 @@ fn build_video_graph(
 /// The shared H.264 video encode settings: H.264 in the pixel format every phone/browser can
 /// decode, preset veryfast/crf 20 (fast encode at visually-lossless quality), 30fps. Segments
 /// and the single-pass reel must encode identically so segment concat can stream-copy.
-const VIDEO_ENCODE_ARGS: [&str; 10] = [
-    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20", "-r", "30",
-];
+fn video_encode_args(profile: ExportPreset) -> [&'static str; 10] {
+    let (preset, crf) = match profile {
+        ExportPreset::Web => ("fast", "24"),
+        ExportPreset::Social => ("veryfast", "20"),
+        ExportPreset::Pro => ("slow", "17"),
+    };
+    [
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", preset, "-crf", crf, "-r", "30",
+    ]
+}
 
 /// Build the whole reel in a SINGLE ffmpeg pass: each scene (a Ken Burns still or a video
 /// clip) is fit to its window, concatenated, captioned, and muxed with audio — one encode
@@ -606,6 +663,7 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         fontsdir,
         canvas,
         watermark,
+        export_preset,
         output,
     } = opts;
 
@@ -678,7 +736,11 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         .iter()
         .map(|s| s.to_string()),
     );
-    args.extend(VIDEO_ENCODE_ARGS.iter().map(|s| s.to_string()));
+    args.extend(
+        video_encode_args(export_preset)
+            .iter()
+            .map(|s| s.to_string()),
+    );
     args.extend(
         [
             "-c:a",
@@ -719,6 +781,7 @@ pub struct RenderSegmentOptions<'a> {
     /// Optional watermark image path, burned into each segment (so the stream-copy concat keeps
     /// it) at the same position/size as a single-pass reel.
     pub watermark: Option<&'a str>,
+    pub export_preset: ExportPreset,
     pub output: &'a str,
 }
 
@@ -746,7 +809,11 @@ pub fn render_segment(opts: RenderSegmentOptions<'_>) -> Result<()> {
             .iter()
             .map(|s| s.to_string()),
     );
-    args.extend(VIDEO_ENCODE_ARGS.iter().map(|s| s.to_string()));
+    args.extend(
+        video_encode_args(opts.export_preset)
+            .iter()
+            .map(|s| s.to_string()),
+    );
     args.push(opts.output.to_string());
     run_ffmpeg_in(opts.dir, &args, "segment render")
 }

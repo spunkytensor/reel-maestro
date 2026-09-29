@@ -1,0 +1,59 @@
+name: reel-maestro
+
+x-reelmaestro-runtime: &reelmaestro-runtime
+  build:
+    context: .
+    args:
+      REELMAESTRO_UID: ${REELMAESTRO_UID:-1000}
+      REELMAESTRO_GID: ${REELMAESTRO_GID:-1000}
+  image: reel-maestro:local
+  init: true
+  user: ${REELMAESTRO_UID:-1000}:${REELMAESTRO_GID:-1000}
+  working_dir: /data/out
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    HOME: /home/reelmaestro
+    REELMAESTRO_OUT_DIR: /data/out
+    REELMAESTRO_STATE_DIR: /data/state
+    REELMAESTRO_HOST: 0.0.0.0
+    REELMAESTRO_PORT: ${REELMAESTRO_PORT:-3001}
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  volumes:
+    - type: bind
+      source: ./out
+      target: /data/out
+    - type: volume
+      source: state
+      target: /data/state
+    - type: volume
+      source: models
+      target: /home/reelmaestro/.cache/whisper
+  extra_hosts:
+    - host.docker.internal:host-gateway
+
+services:
+  studio:
+    <<: *reelmaestro-runtime
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REELMAESTRO_PORT:-3001}:${REELMAESTRO_PORT:-3001}"
+
+  cli:
+    <<: *reelmaestro-runtime
+    profiles:
+      - cli
+    entrypoint:
+      - reelmaestro
+    command:
+      - --help
+    restart: "no"
+
+volumes:
+  state:
+  models:

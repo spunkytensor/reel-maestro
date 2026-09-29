@@ -1,0 +1,52 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Start — Reel Maestro Studio</title><link rel="stylesheet" href="studio.css">
+<style>
+main { position: fixed; inset: 0; display: grid; place-items: center; padding-top: 48px; }
+.card { width: 760px; padding: 36px 36px 28px; }
+.card .lead { margin-top: 8px; max-width: 60ch; }
+.card .field { margin-top: 24px; }
+.choices { margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap; }
+.summary { margin-top: 14px; }
+.summary a { color: var(--ink-1); font-weight: 500; }
+.foot { margin-top: 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+:root[data-customize="1"] main { place-items: center start; padding-left: 120px; }
+.popover.customize { left: 850px; top: 50%; transform: translateY(-46%); width: 420px; }
+.popover .item { min-height: 56px; }
+</style></head>
+<body>
+<header class="bar glass">
+  <div class="brand" id="brand"><span class="name">Reel Maestro</span><span class="by">by Spunky Tensor</span></div>
+  <div class="spacer"></div>
+  <nav class="nav row"><a href="#">Projects</a><a href="#">Settings</a></nav>
+</header>
+<main>
+  <section class="glass card">
+    <h1 class="title">Describe the video you want</h1>
+    <p class="body ink-2 lead">A topic is enough. You can also paste a link to an article or drop in a script you have already written.</p>
+    <div class="field big">The history of espresso — how a rushed Italian invention became the world's favourite coffee</div>
+    <div class="choices">
+      <div class="seg"><span class="on">Widescreen</span><span>Vertical</span></div>
+      <div class="seg"><span class="on">About 1 minute</span><span>3 minutes</span><span>6 minutes</span></div>
+      <div class="seg"><span>Quick draft</span><span class="on">Balanced</span><span>Best quality</span></div>
+    </div>
+    <p class="caption summary">Narration, captions and music on · video clips off · <a href="#">Customize</a></p>
+    <div class="foot">
+      <span class="caption">Estimated cost <span class="tc">$0.16</span> · ready in about 4 minutes</span>
+      <button class="btn primary lg"><span>Generate video</span></button>
+    </div>
+  </section>
+
+  <div class="glass elevated popover customize variant">
+    <div class="row between" style="margin-bottom:8px"><h2 class="section">Customize</h2><button class="btn quiet sm icon">${ic}</button></div>
+    <div class="list">
+      <div class="item"><div><div class="l">Narration</div><div class="c">Automatic voice · normal pace</div></div><span class="toggle on"></span></div>
+      <div class="item"><div><div class="l">Music</div><div class="c">Ducks under the narration</div></div><div class="seg sm"><span class="on">Generated</span><span>None</span><span>Your track</span></div></div>
+      <div class="item"><div><div class="l">Video clips</div><div class="c">Animated scenes cost more and take longer</div></div><div class="seg sm"><span class="on">Off</span><span>Some scenes</span><span>All scenes</span></div></div>
+      <div class="item"><div><div class="l">Captions</div><div class="c">Burned into the video</div></div><div class="seg sm"><span class="on">Burst</span><span>Karaoke</span><span>Boxed</span><span>Minimal</span></div></div>
+      <div class="item"><div><div class="l">Spending limit</div><div class="c">Stops before starting if the estimate is higher</div></div><span class="tc">$5.00</span></div>
+      <div class="item"><div><div class="l">Models</div><div class="c">Balanced preset</div></div><button class="btn quiet sm">Change</button></div>
+    </div>
+  </div>
+</main>
+<script src="shell.js"></script>
+<script>document.getElementById('brand').insertAdjacentHTML('afterbegin', brandMark); document.querySelector('.popover .btn.icon').innerHTML = ic('i-x');</script>
+</body></html>
