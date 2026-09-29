@@ -318,8 +318,18 @@ export class Store {
     plan: StoredRevisionPlan;
     maxCost: number;
   }) {
-    const input: PlanInput = {
-      prompt: "revision",
+    // Use the saved request, never the approval body. Native plans expand defaults,
+    // including an export preset even when the user only asked to apply edits.
+    // Keep it in the existing input JSON so it survives restarts without a migration.
+    const request = row(JSON.parse(readFileSync(j.plan.requestPath, "utf8")));
+    const script = row(request?.script);
+    const input: PlanInput & Pick<Job, "operation"> = {
+      prompt: typeof script?.title === "string" ? script.title : "Video edit",
+      operation:
+        Array.isArray(request?.arguments) &&
+        request.arguments.includes("--export-preset")
+          ? "export"
+          : "apply",
       source: "topic",
       format: "reel",
       quality: "standard",
@@ -576,6 +586,7 @@ export class Store {
     const runId = parsed.run_id;
     const sourceRunId = parsed.source_run_id;
     const error = parsed.error;
+    const input = row(JSON.parse(stringField(parsed.input, "job input")));
     const latest = this.events(stringField(parsed.id, "job id")).findLast(
       (event) => event.stage !== undefined || event.progress !== undefined,
     );
@@ -587,6 +598,17 @@ export class Store {
       status: statusField(parsed.status),
       createdAt: stringField(parsed.created, "created time"),
       updatedAt: stringField(parsed.updated, "updated time"),
+      title:
+        typeof input?.prompt === "string" && input.prompt !== "revision"
+          ? input.prompt.trim().replace(/\s+/g, " ").slice(0, 100) ||
+            "Untitled video"
+          : "Video edit",
+      operation:
+        input?.operation === "export"
+          ? "export"
+          : sourceRunId
+            ? "apply"
+            : "generate",
       ...(typeof runId === "string" && runId ? { runId } : {}),
       ...(typeof sourceRunId === "string" && sourceRunId
         ? { sourceRunId }

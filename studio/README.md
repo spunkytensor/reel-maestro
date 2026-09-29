@@ -32,6 +32,8 @@ describe a video, and review the estimate before approving paid work. Settings c
 generation defaults, saved-video location/rescan, and application information—not credentials.
 A configured key is **not** a verified provider connection. Previously saved private credentials
 remain in the state directory and take precedence over environment keys.
+Settings → Generation setup reports credential presence and CLI availability, with operator
+instructions and a Recheck setup action. Credentials still stay outside the browser.
 
 Studio does not automatically load the repository `.env`. Supply server settings through the
 process environment; export `OPENROUTER_API_KEY` when starting
@@ -49,12 +51,16 @@ installation, see [Docker setup, security, and backups](../docs/container.md).
 - Browse/search/filter existing videos under `out/`, including incomplete/damaged projects.
 - Play and scrub completed videos, explore scene images with arrow keys, inspect words/image/motion
   direction, and listen to available narration/music.
+  The separate Scene images browser inspects stills; it does not seek playback or preview unapplied
+  edits. Use the playback scrubber to seek the completed video.
 - Download original MP4s, posters, captions, and description/chapter documents. Studio does not
   re-encode, add a watermark, or claim to create an export when downloading an existing file.
 - Create from a topic, pasted brief, verbatim script, uploaded text, or fetched article URL. Choose format, quality, widescreen length,
   narration/voice/pace, music, all-scene animation, captions, and an estimate guard.
 - Review itemized Rust estimates and explicitly approve a single durable job. Duplicate approval
   cannot launch the same plan twice. Activity reconnects through SSE and work survives page refresh.
+  Named activity entries distinguish generation, applying edits, and exporting. The generation
+  progress address survives refresh and opens the video when it completes.
 - Cancel local work; interrupted paid work is never automatically retried.
 - Edit scene words, image/motion descriptions, ordering, deletion, chapters, characters, locations,
   and poster concepts. Drafts autosave in this browser and support undo/redo.
@@ -66,6 +72,8 @@ installation, see [Docker setup, security, and backups](../docs/container.md).
   stale approvals; originals are never modified. Compare versions with side-by-side playback.
 - Export a new H.264 MP4 using Web, Social, or Pro presets at the current dimensions. Arbitrary codec
   and bitrate selection is not part of v1. Existing-artifact downloads do not re-encode anything.
+  Review export keeps approval and reuse checks explicit; completed exports open an Exported card
+  with Download MP4. Activity can reopen that download state, including after refresh.
 - Explicitly resume recoverable interrupted revisions from Activity, using the exact approved plan.
   Ambiguous paid acceptance requires operator resolution rather than a blind retry.
 - Light/dark/system theme, reduced transparency/motion, browser-local generation defaults.

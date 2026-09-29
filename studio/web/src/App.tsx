@@ -5,7 +5,7 @@ import type {
   RunSummary,
   Settings as SettingsData,
 } from "../../shared";
-import { Activity, inProgress, jobLabels } from "./Activity";
+import { Activity, inProgress, jobLabel } from "./Activity";
 import { api, errorMessage } from "./api";
 import { Brand, Icon, Notice } from "./components";
 import { Editor } from "./Editor";
@@ -26,7 +26,7 @@ export function App() {
   const [scanning, setScanning] = useState(false);
   const [activity, setActivity] = useState(false);
   const [appearance, setAppearance] = useAppearance();
-  const newJob = useRef<string | undefined>(undefined);
+  const newJobId = route.startsWith("new/") ? route.slice(4) : undefined;
   const scanActive = useRef(false);
 
   const refreshJobs = useCallback(async () => {
@@ -70,7 +70,9 @@ export function App() {
     if (!ready || route) return;
     location.hash = runs.length ? "projects" : "new";
   }, [ready, route, runs.length]);
-  const videoId = route.startsWith("video/") ? route.slice(6) : undefined;
+  const videoId = route.startsWith("video/")
+    ? route.slice(6).split("?")[0]
+    : undefined;
   useEffect(() => {
     let cancelled = false;
     setDetail(undefined);
@@ -117,13 +119,12 @@ export function App() {
     };
   }, [ready, activeIds, refreshJobs]);
   useEffect(() => {
-    const job = jobs.find((job) => job.id === newJob.current);
+    const job = jobs.find((job) => job.id === newJobId);
     if (job?.status === "succeeded") {
-      newJob.current = undefined;
       void refresh().catch((error) => setError(errorMessage(error)));
-      if (job.runId && route === "new") location.hash = `video/${job.runId}`;
+      if (job.runId) location.hash = `video/${job.runId}`;
     }
-  }, [jobs, route, refresh]);
+  }, [jobs, newJobId, refresh]);
   useEffect(() => {
     document.title = `${detail?.title ?? (route === "settings" ? "Settings" : route === "projects" ? "Your videos" : "Create a video")} — Reel Maestro Studio`;
   }, [detail?.title, route]);
@@ -228,6 +229,8 @@ export function App() {
             key={detail.id}
             run={detail}
             jobs={jobs}
+            downloadRequested={route.endsWith("?download")}
+            onActivity={() => setActivity(true)}
             onJob={(job) => {
               setJobs((previous) => [
                 job,
@@ -267,13 +270,14 @@ export function App() {
       ) : (
         <Start
           settings={settings}
+          job={jobs.find((job) => job.id === newJobId)}
+          onActivity={() => setActivity(true)}
           onJob={(job) => {
-            newJob.current = job.id;
             setJobs((previous) => [
               job,
               ...previous.filter((old) => old.id !== job.id),
             ]);
-            setActivity(true);
+            location.hash = `new/${job.id}`;
           }}
         />
       )}
@@ -293,8 +297,8 @@ export function App() {
       />
       <div className="sr-only" role="status" aria-live="polite">
         {jobs
-          .filter((job) => job.id === newJob.current)
-          .map((job) => jobLabels[job.status])
+          .filter((job) => job.id === newJobId)
+          .map(jobLabel)
           .join(". ")}
       </div>
     </>

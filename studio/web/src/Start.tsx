@@ -15,13 +15,18 @@ import {
   Toggle,
 } from "./components";
 import { readDefaults } from "./preferences";
+import { inProgress, JobProgress, jobLabel } from "./Activity";
 
 export function Start({
   settings,
   onJob,
+  job,
+  onActivity,
 }: {
   settings: Settings | undefined;
   onJob: (job: Job) => void;
+  job?: Job;
+  onActivity: () => void;
 }) {
   const [input, setInput] = useState<PlanInput>(() => ({
     ...readDefaults(),
@@ -43,6 +48,7 @@ export function Start({
   const [now, setNow] = useState(Date.now());
   const approvalKey = useRef("");
   const submitting = useRef(false);
+  const working = !!job && inProgress(job);
   useEffect(() => {
     if (!plan) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -68,6 +74,7 @@ export function Start({
   async function estimate() {
     if (
       submitting.current ||
+      working ||
       uploading ||
       invalid ||
       plan ||
@@ -147,7 +154,7 @@ export function Start({
         >
           <fieldset
             className="generation-controls"
-            disabled={busy || uploading || !!plan}
+            disabled={busy || uploading || !!plan || working}
           >
             <label className="sr-only" htmlFor="prompt">
               Describe your video
@@ -242,8 +249,10 @@ export function Start({
                 </>
               ) : !settings.providerConnected ? (
                 <>
-                  Configure OPENROUTER_API_KEY in the server environment to
-                  generate.
+                  Generation needs to be set up on this computer.{" "}
+                  <a className="text-button" href="#settings">
+                    View setup instructions
+                  </a>
                 </>
               ) : (
                 <>
@@ -261,16 +270,34 @@ export function Start({
               disabled={
                 invalid ||
                 busy ||
+                working ||
                 uploading ||
                 !!plan ||
                 !settings?.generationAvailable ||
                 !settings.providerConnected
               }
             >
-              {busy && !plan ? "Estimating cost…" : "Generate video"}
+              {working
+                ? `${jobLabel(job)}…`
+                : busy && !plan
+                  ? "Estimating cost…"
+                  : "Generate video"}
             </button>
           </div>
         </form>
+        {job && (
+          <section
+            className="notice overlay-note"
+            aria-label="Your video’s progress"
+          >
+            <h2 className="label">{job.title ?? "Your video"}</h2>
+            <JobProgress job={job} />
+            {job.error && <p className="caption">{job.error}</p>}
+            <button className="btn quiet" onClick={onActivity}>
+              View activity and recovery
+            </button>
+          </section>
+        )}
         {error && !plan && <Notice error>{error}</Notice>}
       </section>
 

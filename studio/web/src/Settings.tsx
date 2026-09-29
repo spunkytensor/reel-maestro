@@ -30,7 +30,7 @@ export function Settings({
   scanning: boolean;
 }) {
   const [defaults, setDefaults] = useState<Defaults>(readDefaults);
-  const [info, setInfo] = useState<"help" | "licenses">();
+  const [info, setInfo] = useState<"help" | "licenses" | "setup">();
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   function update(value: Partial<Defaults>) {
@@ -73,6 +73,62 @@ export function Settings({
                 ]}
                 onChange={(theme) => appearanceChange({ theme })}
               />
+            </Item>
+          </div>
+        </section>
+        <section className="glass group">
+          <h2 className="section">Generation setup</h2>
+          <div className="list">
+            <Item
+              label="AI credential"
+              caption="Configured means a credential is present, not that it has been verified"
+            >
+              <span
+                className={`pill ${settings?.providerConnected ? "ok" : settings ? "warn" : ""}`}
+              >
+                {settings
+                  ? settings.providerConnected
+                    ? "Configured"
+                    : "Not configured"
+                  : "Checking…"}
+              </span>
+            </Item>
+            <Item
+              label="Generation tools"
+              caption="The Reel Maestro CLI must be available to Studio"
+            >
+              <span
+                className={`pill ${settings?.generationAvailable ? "ok" : settings ? "warn" : ""}`}
+              >
+                {settings
+                  ? settings.generationAvailable
+                    ? "Available"
+                    : "Unavailable"
+                  : "Checking…"}
+              </span>
+            </Item>
+            <Item label="Operator setup">
+              <button className="btn quiet" onClick={() => setInfo("setup")}>
+                View instructions
+              </button>
+            </Item>
+            <Item
+              label="Setup status"
+              caption="Check again after Studio has been restarted"
+            >
+              <button
+                className="btn quiet"
+                disabled={scanning}
+                onClick={() => {
+                  setError("");
+                  setMessage("");
+                  void onRefresh()
+                    .then(() => setMessage("Generation setup was rechecked."))
+                    .catch((error) => setError(errorMessage(error)));
+                }}
+              >
+                {scanning ? "Rechecking…" : "Recheck setup"}
+              </button>
             </Item>
           </div>
         </section>
@@ -153,14 +209,6 @@ export function Settings({
             <p className="caption">by Spunky Tensor</p>
           </div>
           <div className="list">
-            <Item
-              label="Generation tools"
-              caption={
-                settings?.generationAvailable
-                  ? "Reel Maestro is installed"
-                  : "Build the Reel Maestro CLI before generating videos"
-              }
-            />
             <Item label="Licenses">
               <button className="btn quiet" onClick={() => setInfo("licenses")}>
                 View
@@ -176,10 +224,37 @@ export function Settings({
       </div>
       {info && (
         <Overlay
-          title={info === "help" ? "About this release" : "Licenses"}
+          title={
+            info === "help"
+              ? "About this release"
+              : info === "setup"
+                ? "Generation setup"
+                : "Licenses"
+          }
           onClose={() => setInfo(undefined)}
         >
-          {info === "help" ? (
+          {info === "setup" ? (
+            <div className="help-copy">
+              <p>
+                Credentials are managed by the Studio operator. Set{" "}
+                <span className="tc">OPENROUTER_API_KEY</span> in the server
+                environment, then restart Studio and recheck setup.
+              </p>
+              <p>
+                Do not enter or paste secrets into the browser. A configured
+                status only confirms that a credential is present; it does not
+                verify the credential with the service.
+              </p>
+              <a
+                className="btn quiet"
+                href="https://github.com/spunkytensor/reel-maestro/blob/main/docs/container.md"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Container setup documentation
+              </a>
+            </div>
+          ) : info === "help" ? (
             <div className="help-copy">
               <p>
                 Create a video from a topic, brief, or script, review the cost,

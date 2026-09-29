@@ -41,6 +41,7 @@ export async function verifyNativeRevision({
   await app.listen({ host: "127.0.0.1", port });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
+    deviceScaleFactor: 2,
     colorScheme: "light",
     reducedMotion: "reduce",
   });
@@ -199,6 +200,61 @@ export async function verifyNativeRevision({
     const library: { runs: RunSummary[] } = await libraryResponse.json();
     assert.ok(
       library.runs.some((run) => run.id === id && run.status === "complete"),
+    );
+    // Export an already published version with the real offline renderer, then
+    // verify the completion/download route survives refresh and Activity reopening.
+    await page.getByRole("button", { name: "Export MP4", exact: true }).click();
+    await page.getByRole("checkbox").check();
+    await screenshot(page, "export-mobile-dark");
+    await page
+      .getByRole("button", { name: "Review export", exact: true })
+      .click();
+    const exportReview = page.getByRole("dialog", { name: "Export MP4" });
+    await exportReview
+      .getByText("No paid generation is included.", { exact: false })
+      .waitFor();
+    await screenshot(page, "export-review-mobile-dark");
+    await exportReview
+      .getByRole("button", { name: "Export MP4", exact: true })
+      .click();
+    await page.waitForURL(/\?download$/, { timeout: 180_000 });
+    await page.getByRole("dialog", { name: "Exported", exact: true }).waitFor();
+    const exportJobs: { jobs: Job[] } = await (
+      await context.request.get(`http://127.0.0.1:${port}/api/jobs`)
+    ).json();
+    const exportJob = exportJobs.jobs.find((job) => job.operation === "export");
+    assert.equal(exportJob?.status, "succeeded");
+    assert.equal(exportJob?.title, "The history of espresso");
+    assert.ok(
+      exportJobs.jobs.some(
+        (job) =>
+          job.operation === "apply" && job.title === "The history of espresso",
+      ),
+    );
+    await page.reload();
+    await page.getByRole("dialog", { name: "Exported", exact: true }).waitFor();
+    await screenshot(page, "exported-mobile-dark");
+    const download = page.waitForEvent("download");
+    assert.ok(
+      (
+        await page
+          .getByRole("link", { name: "Download MP4", exact: true })
+          .getAttribute("href")
+      )?.includes(`/runs/${exportJob?.runId}/`),
+      "download belongs to the exported version, not the source",
+    );
+    await page.getByRole("link", { name: "Download MP4", exact: true }).click();
+    const downloaded = await download;
+    assert.ok(downloaded.suggestedFilename().endsWith(".mp4"));
+    assert.equal(await downloaded.failure(), null);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Activity", exact: true }).click();
+    await page.getByRole("link", { name: "Download exported video" }).click();
+    await page.getByRole("dialog", { name: "Exported", exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    assert.equal(
+      hash(await readFile(path.join(source, "reel.mp4"))),
+      hash(originalVideo),
     );
     // Recovery controls use a browser transport fixture; native recovery guards are covered by server tests.
     let resumed = 0;

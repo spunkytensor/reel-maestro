@@ -25,7 +25,7 @@ import { UploadField } from "./UploadField";
 import { Versions } from "./Versions";
 import { EntityFields } from "./EntityFields";
 import { useRevision } from "./useRevision";
-import { inProgress } from "./Activity";
+import { inProgress, jobLabel, JobProgress } from "./Activity";
 
 const revisionReasons: Record<string, string> = {
   dependencies_match: "Creation settings match",
@@ -64,12 +64,25 @@ export function Editor({
   run,
   jobs,
   onJob,
+  downloadRequested,
+  onActivity,
 }: {
   run: RunDetail;
   jobs: Job[];
   onJob: (job: Job) => void;
+  downloadRequested: boolean;
+  onActivity: () => void;
 }) {
-  const [downloads, setDownloads] = useState(false);
+  const [downloads, setDownloads] = useState(downloadRequested);
+  const exported = jobs.some(
+    (job) =>
+      job.runId === run.id &&
+      job.operation === "export" &&
+      job.status === "succeeded",
+  );
+  useEffect(() => {
+    if (downloadRequested) setDownloads(true);
+  }, [downloadRequested]);
   const [versions, setVersions] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -204,7 +217,7 @@ export function Editor({
         /* navigation does not depend on storage */
       }
       revision.reset();
-      location.hash = `video/${submittedJob.runId}`;
+      location.hash = `video/${submittedJob.runId}${submittedJob.operation === "export" ? "?download" : ""}`;
     }
   }, [submittedJob?.status, submittedJob?.runId]);
 
@@ -281,7 +294,7 @@ export function Editor({
               }}
             >
               {applying
-                ? "Applying changes…"
+                ? `${jobLabel(submittedJob)}…`
                 : revision.busy
                   ? "Reviewing changes…"
                   : revision.changeCount
@@ -400,13 +413,16 @@ export function Editor({
                   ? `${revision.changeCount} unapplied changes · draft kept in this browser`
                   : "Completed video stays preserved"}
                 <br />
-                Preview shows the current completed version.
+                Scene images are separate from video playback.
               </p>
               <button
                 className="btn"
                 disabled={!scene || locked}
                 aria-expanded={customize}
-                onClick={() => setCustomize(true)}
+                onClick={() => {
+                  setCustomize(true);
+                  setMobileScenes(false);
+                }}
               >
                 Customize scene
               </button>
@@ -416,6 +432,7 @@ export function Editor({
                 onClick={() => {
                   setFinishing(true);
                   setCustomize(false);
+                  setMobileScenes(false);
                 }}
               >
                 Customize video
@@ -639,7 +656,7 @@ export function Editor({
           {scenePreview && (
             <div className="scene-preview-label glass elevated">
               <span className="caption">
-                Scene {selected + 1} · image preview
+                Scene {selected + 1} · still image, not playback
               </span>
               {run.videoUrl && (
                 <button
@@ -660,6 +677,14 @@ export function Editor({
               : "This video is not finished. Available scene images can still be inspected."}
           </Notice>
         )}
+        {submittedJob && (
+          <section className="notice" aria-label="Video progress">
+            <JobProgress job={submittedJob} />
+            <button className="btn quiet" onClick={onActivity}>
+              View activity and recovery
+            </button>
+          </section>
+        )}
         <section className="glass timeline" aria-label="Playback">
           <div className="transport">
             <button
@@ -675,7 +700,7 @@ export function Editor({
               <span className="ink-2">/ {timecode(duration)}</span>
             </span>
             <span className="caption keyboard-hint">
-              Space to play · arrows to explore scenes
+              Space to play · scrub to seek
             </span>
             <span className="grow" />
             <button
@@ -725,11 +750,21 @@ export function Editor({
               }
             }}
           />
+        </section>
+        <section
+          className="glass scene-browser"
+          aria-label="Scene image browser"
+        >
+          <h2 className="label">Scene images</h2>
+          <p className="caption">
+            Select a still to inspect or edit. This does not move video
+            playback.
+          </p>
           <div className="track" aria-label="Scene images">
             {scenes.map((scene, index) => (
               <button
                 key={scene.id}
-                className={`seg-clip ${selected === index ? "on" : ""}`}
+                className={`seg-clip ${selected === index && scenePreview ? "on" : ""}`}
                 aria-label={`Preview scene ${index + 1}`}
                 aria-pressed={selected === index && scenePreview}
                 onClick={() => select(index)}
@@ -1209,8 +1244,9 @@ export function Editor({
           {!revision.plan ? (
             <>
               <p className="body ink-2">
-                This completed video stays exactly as it is. Review the work and
-                cost before creating a new version.
+                {exportOpen
+                  ? "Download the current MP4 as it is, or choose a preset to create a separate export. Your video stays unchanged."
+                  : "This completed video stays exactly as it is. Review the work and cost before creating a new version."}
               </p>
               <fieldset className="generation-controls" disabled={locked}>
                 {exportOpen && (
@@ -1243,23 +1279,34 @@ export function Editor({
                       )
                     }
                   />
-                  Keep existing media when its original creation settings are
-                  unknown. I have reviewed these assets.
+                  {exportOpen
+                    ? "Use the images and audio already in this video, including media from earlier releases. I have reviewed them."
+                    : "Keep existing media when its original creation settings are unknown. I have reviewed these assets."}
                 </label>
-                <Item label="Spending limit">
-                  <input
-                    className="field compact tc"
-                    aria-label="Revision spending limit"
-                    type="number"
-                    min="0"
-                    max="1000"
-                    step="0.5"
-                    value={Number.isFinite(draft.maxCost) ? draft.maxCost : ""}
-                    onChange={(event) =>
-                      revision.update("maxCost", event.target.valueAsNumber)
-                    }
-                  />
-                </Item>
+                <details
+                  open={exportOpen ? undefined : true}
+                  className="advanced-controls"
+                >
+                  <summary className="label">
+                    {exportOpen ? "Advanced export options" : "Spending limit"}
+                  </summary>
+                  <Item label="Spending limit (USD)">
+                    <input
+                      className="field compact tc"
+                      aria-label="Revision spending limit"
+                      type="number"
+                      min="0"
+                      max="1000"
+                      step="0.5"
+                      value={
+                        Number.isFinite(draft.maxCost) ? draft.maxCost : ""
+                      }
+                      onChange={(event) =>
+                        revision.update("maxCost", event.target.valueAsNumber)
+                      }
+                    />
+                  </Item>
+                </details>
               </fieldset>
               {revision.error && <Notice error>{revision.error}</Notice>}
               <div className="overlay-footer">
@@ -1289,7 +1336,11 @@ export function Editor({
                     )
                   }
                 >
-                  {revision.busy ? "Reviewing work…" : "Review changes"}
+                  {revision.busy
+                    ? "Reviewing work…"
+                    : exportOpen
+                      ? "Review export"
+                      : "Review changes"}
                 </button>
               </div>
             </>
@@ -1302,31 +1353,44 @@ export function Editor({
                 </span>
                 . Your earlier version stays unchanged.
               </p>
-              {(
-                [
-                  ["generate", "Regenerate"],
-                  ["reuse", "Keep"],
-                  ["exclude", "Remove"],
-                  ["derive", "Restyle"],
-                ] as const
-              ).map(([action, label]) => {
-                const items =
-                  revision.plan?.actions.filter(
-                    (item) => item.action === action,
-                  ) ?? [];
-                return items.length ? (
-                  <section key={action}>
-                    <h3 className="label">{label}</h3>
-                    <ul className="review-actions">
-                      {items.map((item, index) => (
-                        <li key={index}>
-                          {revisionActionLabel(item, draft.scenes)}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ) : null;
-              })}
+              {exportOpen && (
+                <p className="caption">
+                  {revision.plan.estimate.total_usd > 0
+                    ? "This export includes paid work. Review what will be regenerated before approving."
+                    : "No paid generation is included. This export is prepared on this computer."}
+                </p>
+              )}
+              <details
+                className="advanced-controls"
+                open={!exportOpen || revision.plan.estimate.total_usd > 0}
+              >
+                <summary className="label">Work included</summary>
+                {(
+                  [
+                    ["generate", "Regenerate"],
+                    ["reuse", "Keep"],
+                    ["exclude", "Remove"],
+                    ["derive", "Restyle"],
+                  ] as const
+                ).map(([action, label]) => {
+                  const items =
+                    revision.plan?.actions.filter(
+                      (item) => item.action === action,
+                    ) ?? [];
+                  return items.length ? (
+                    <section key={action}>
+                      <h3 className="label">{label}</h3>
+                      <ul className="review-actions">
+                        {items.map((item, index) => (
+                          <li key={index}>
+                            {revisionActionLabel(item, draft.scenes)}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null;
+                })}
+              </details>
               <p className="caption">
                 {revision.plan.estimate.warning} This is an estimate guard, not
                 a guaranteed billing cap.
@@ -1378,9 +1442,12 @@ export function Editor({
 
       {downloads && (
         <Overlay
-          title="Ready to download"
+          title={exported ? "Exported" : "Ready to download"}
           kind="success"
-          onClose={() => setDownloads(false)}
+          onClose={() => {
+            setDownloads(false);
+            if (downloadRequested) location.hash = `video/${run.id}`;
+          }}
         >
           {run.posterUrl && (
             <img
@@ -1391,7 +1458,9 @@ export function Editor({
           )}
           <h2 className="section">{run.title}</h2>
           <p className="caption">
-            Current completed version · downloads do not modify your video.
+            {exported
+              ? "Your exported MP4 is ready. The earlier video stays unchanged."
+              : "Current completed version · downloads do not modify your video."}
           </p>
           <div className="list companion-downloads">
             {run.artifacts

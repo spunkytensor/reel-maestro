@@ -188,6 +188,8 @@ export type Job = {
   status: JobStatus;
   createdAt: string;
   updatedAt: string;
+  title?: string;
+  operation?: "generate" | "apply" | "export";
   runId?: string;
   sourceRunId?: string;
   error?: string;

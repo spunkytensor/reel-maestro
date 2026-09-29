@@ -16,6 +16,22 @@ export function inProgress(job: Job) {
   return ["queued", "running", "cancelling"].includes(job.status);
 }
 
+export function jobLabel(job: Job) {
+  if (job.status === "running")
+    return job.operation === "export"
+      ? "Exporting"
+      : job.operation === "apply"
+        ? "Applying changes"
+        : "Generating";
+  if (job.status === "succeeded")
+    return job.operation === "export"
+      ? "Exported"
+      : job.operation === "apply"
+        ? "Changes applied"
+        : "Ready";
+  return jobLabels[job.status];
+}
+
 const stageLabels: Record<string, string> = {
   script: "Writing your story",
   narration: "Recording narration",
@@ -32,6 +48,34 @@ const stageLabels: Record<string, string> = {
   prepare: "Preparing a new version",
 };
 
+export function JobProgress({ job }: { job: Job }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!inProgress(job)) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [job.status]);
+  return (
+    <div className="job-progress">
+      <p className="label" role="status">
+        {jobLabel(job)}
+        {job.stage && inProgress(job)
+          ? ` · ${stageLabels[job.stage] ?? "Working on your video"}`
+          : ""}
+      </p>
+      {inProgress(job) && (
+        <p className="caption">
+          Since requested{" "}
+          <span className="tc">
+            {timecode(Math.max(0, (now - Date.parse(job.createdAt)) / 1000))}
+          </span>{" "}
+          · You can leave this page; work continues.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function Activity({
   jobs,
   onClose,
@@ -41,15 +85,10 @@ export function Activity({
   onClose: () => void;
   onRefresh: () => Promise<void>;
 }) {
-  const [now, setNow] = useState(Date.now());
   const [error, setError] = useState("");
   const [cancelling, setCancelling] = useState<string>();
   const [resumeId, setResumeId] = useState<string>();
   const [resuming, setResuming] = useState(false);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
   async function cancel(id: string) {
     setCancelling(id);
     setError("");
@@ -79,15 +118,15 @@ export function Activity({
     <Overlay title="Activity" onClose={onClose}>
       {!jobs.length && <p className="ink-2">No work has been requested yet.</p>}
       <div className="activity-list">
-        {jobs.map((job, index) => (
+        {jobs.map((job) => (
           <article className="activity-job" key={job.id}>
             <div className="row between">
-              <h3 className="label">Video {jobs.length - index}</h3>
+              <h3 className="label">{job.title ?? "Video"}</h3>
               <span
                 className={`pill ${job.status === "failed" || job.status === "interrupted" ? "warn" : job.status === "succeeded" ? "ok" : ""}`}
               >
                 <span className="dot" />
-                {jobLabels[job.status]}
+                {jobLabel(job)}
               </span>
             </div>
             <p className="caption">
@@ -97,19 +136,7 @@ export function Activity({
                 timeStyle: "short",
               })}
             </p>
-            {inProgress(job) && (
-              <p className="caption">
-                Since requested{" "}
-                <span className="tc">
-                  {timecode((now - Date.parse(job.createdAt)) / 1000)}
-                </span>
-              </p>
-            )}
-            {job.stage && inProgress(job) && (
-              <p className="caption" role="status">
-                {stageLabels[job.stage] ?? "Working on your video"}
-              </p>
-            )}
+            {inProgress(job) && <JobProgress job={job} />}
             {!!job.warnings?.length && (
               <details>
                 <summary className="caption">Ready, with a note</summary>
@@ -143,10 +170,25 @@ export function Activity({
               {job.runId && (
                 <a
                   className="btn quiet"
-                  href={`#video/${job.runId}`}
+                  href={`#video/${job.runId}${job.operation === "export" ? "?download" : ""}`}
                   onClick={onClose}
                 >
-                  Open video
+                  {job.operation === "export"
+                    ? "Download exported video"
+                    : "Open video"}
+                </a>
+              )}
+              {!job.runId && (
+                <a
+                  className="btn quiet"
+                  href={
+                    job.sourceRunId
+                      ? `#video/${job.sourceRunId}`
+                      : `#new/${job.id}`
+                  }
+                  onClick={onClose}
+                >
+                  View progress
                 </a>
               )}
               {["queued", "running"].includes(job.status) && (

@@ -51,6 +51,10 @@ Use Docker Compose 2.24 or newer. See [runtime credentials and container operati
 and [native Studio startup](studio/README.md#run-locally). The default Docker port is loopback-only,
 not an authenticated public service.
 
+Studio's Settings → Generation setup explains missing credentials and lets you recheck setup.
+Activity names each video and distinguishes generation, edits, and exports. Completed exports
+open a download card; scene-image inspection stays separate from completed-video playback.
+
 ![Reel Maestro Studio in dark mode showing an espresso video, scene list, and timeline](docs/studio-screenshot.png)
 
 ## How it works

@@ -52,6 +52,18 @@ a {
   pointer-events: none;
   z-index: 20;
 }
+body:has(.overlay) .corner-logo {
+  visibility: hidden;
+}
+body:has(.overlay .btn.primary) .mobile-primary {
+  visibility: hidden;
+}
+.job-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
 .bar .nav a,
 .btn,
 .btn.icon {
@@ -493,7 +505,14 @@ a {
 }
 .editor-workspace .timeline {
   flex: 0 0 auto;
-  min-height: 160px;
+  min-height: 100px;
+}
+.scene-browser {
+  flex: 0 0 auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .editor-workspace .track {
   display: flex;
@@ -541,8 +560,8 @@ a {
   font-size: 0.875rem;
 }
 .editor-workspace .overlay.popover {
-  left: 352px;
-  right: auto;
+  left: auto;
+  right: 16px;
 }
 .download-poster {
   display: block;
@@ -647,7 +666,7 @@ a {
 .mobile-undo {
   display: none;
 }
-.editor-workspace:has(.overlay.sheet) .stage {
+.editor-workspace:has(.overlay.sheet, .overlay.popover) .stage {
   padding-right: 456px;
 }
 .editor-workspace:has(.overlay.sheet) .track .seg-clip {
@@ -749,7 +768,10 @@ html[data-motion="reduce"] *::after {
   }
 }
 @media (max-width: 1024px) {
-  .editor-workspace:has(.overlay.sheet) .stage {
+  .overlay.glass.elevated {
+    background: color-mix(in srgb, var(--glass-el), var(--canvas) 90%);
+  }
+  .editor-workspace:has(.overlay.sheet, .overlay.popover) .stage {
     padding-right: 0;
   }
   .editor-actions .undo-button {
@@ -788,11 +810,20 @@ html[data-motion="reduce"] *::after {
     display: inline-flex;
   }
   .editor-workspace .overlay.popover {
-    left: 352px;
-    max-width: calc(100vw - 368px);
+    left: auto;
+    right: 16px;
+    max-width: calc(100vw - 32px);
   }
 }
 @media (max-width: 600px) {
+  body:has(.overlay) .mobile-primary {
+    visibility: hidden;
+  }
+  .editor-title .caption {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .editor-actions > .btn:not(.mobile-primary) {
     padding: 0 6px;
     font-size: 0.75rem;
@@ -971,6 +1002,10 @@ html[data-motion="reduce"] *::after {
   }
   .overlay-footer {
     flex-shrink: 0;
+    position: sticky;
+    bottom: -20px;
+    padding: 16px 0;
+    background: var(--canvas);
   }
   .download-poster {
     max-height: 200px;
@@ -982,9 +1017,12 @@ html[data-motion="reduce"] *::after {
     min-height: 240px;
   }
   .editor-workspace .timeline {
-    min-height: 132px;
+    min-height: 100px;
     padding: 8px 12px 12px;
     gap: 4px;
+  }
+  .editor-workspace .overlay.popover {
+    max-height: 60dvh;
   }
   .transport {
     gap: 6px;

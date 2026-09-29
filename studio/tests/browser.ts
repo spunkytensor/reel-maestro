@@ -136,11 +136,16 @@ if (args.includes('--studio-schema')) { console.log(JSON.stringify({version:1, a
 if (args.includes('--studio-estimate')) { fs.appendFileSync(${JSON.stringify(log)}, 'estimate\\n'); console.log(JSON.stringify({version:1,total_usd:.25,script_usd:.05,narration_usd:.05,images_usd:.15,video_usd:0,music_usd:0,warning:'Offline fixture estimate.'})); process.exit(0); }
 fs.appendFileSync(${JSON.stringify(log)}, 'generate\\n');
 const prompt = args[args.indexOf('--topic')+1] || '';
-setTimeout(() => {
-  if (prompt.includes('failure')) process.exit(1);
+if (prompt.includes('failure')) setTimeout(() => process.exit(1), 2000);
+else if (prompt.includes('cancel')) setInterval(() => {}, 1000);
+else {
+const wait = setInterval(() => {
+  if (!fs.existsSync(${JSON.stringify(path.join(temporary, "finish-generation"))})) return;
+  clearInterval(wait);
   const dir = path.join(args[args.indexOf('--out')+1], 'fixture-result');
   fs.cpSync(${JSON.stringify(espresso)}, dir, {recursive:true});
-}, prompt.includes('cancel') ? 15000 : 2000);
+}, 100);
+}
 `,
   { mode: 0o700 },
 );
@@ -194,18 +199,26 @@ async function screenshot(page: Page, name: string) {
   );
   assert.equal(
     await page.locator(".corner-logo").evaluate((logo) => {
+      if (getComputedStyle(logo).visibility === "hidden") return true;
       const box = logo.getBoundingClientRect();
-      const action = document
-        .querySelector(".mobile-primary")
-        ?.getBoundingClientRect();
       return (
         box.right <= innerWidth &&
         Math.abs(box.bottom - (innerHeight - 14)) < 1 &&
-        (!action ||
-          action.width === 0 ||
-          action.right <= box.left ||
-          action.bottom <= box.top ||
-          action.top >= box.bottom)
+        [
+          ...document.querySelectorAll(
+            ".mobile-primary, .overlay .btn.primary",
+          ),
+        ].every((element) => {
+          if (getComputedStyle(element).visibility === "hidden") return true;
+          const action = element.getBoundingClientRect();
+          return (
+            action.width === 0 ||
+            action.right <= box.left ||
+            action.left >= box.right ||
+            action.bottom <= box.top ||
+            action.top >= box.bottom
+          );
+        })
       );
     }),
     true,
@@ -235,7 +248,7 @@ async function screenshot(page: Page, name: string) {
   if (
     (page.viewportSize()?.width ?? 0) >= 1024 &&
     (await page.locator(".track").count()) &&
-    !(await page.locator(".overlay.sheet").count())
+    !(await page.locator(".overlay.sheet, .overlay.popover").count())
   ) {
     assert.equal(
       await page.locator(".track").evaluate((element) => {
@@ -275,6 +288,7 @@ try {
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     colorScheme: "light",
+    deviceScaleFactor: 2,
     reducedMotion: "reduce",
     acceptDownloads: true,
   });
@@ -362,13 +376,52 @@ try {
     () => (document.querySelector("video")?.currentTime ?? 0) > 0.1,
   );
   await page.getByRole("button", { name: "Pause video", exact: true }).click();
+  const playbackTime = await page
+    .locator(".preview video")
+    .evaluate((video: HTMLVideoElement) => video.currentTime);
   await page.getByRole("option").first().focus();
   await page.keyboard.press("ArrowDown");
   assert.equal(
     await page.getByRole("option").nth(1).getAttribute("aria-selected"),
     "true",
   );
+  assert.equal(
+    await page
+      .locator(".preview video")
+      .evaluate((video: HTMLVideoElement) => video.currentTime),
+    playbackTime,
+  );
+  await page
+    .getByText("Scene 2 · still image, not playback", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page
+      .getByRole("region", { name: "Playback", exact: true })
+      .getByRole("button", { name: /Preview scene/ })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("region", { name: "Scene image browser" })
+      .getByRole("button", { name: /Preview scene/ })
+      .count(),
+    8,
+  );
   await page.getByRole("button", { name: "Customize scene" }).click();
+  assert.equal(
+    await page.evaluate(() => {
+      const preview = document
+        .querySelector(".preview")!
+        .getBoundingClientRect();
+      const inspector = document
+        .querySelector(".overlay")!
+        .getBoundingClientRect();
+      return preview.right <= inspector.left;
+    }),
+    true,
+    "desktop inspector keeps preview unobstructed",
+  );
   await screenshot(page, "scene-light");
   const originalImage = await page
     .getByLabel("Image", { exact: true })
@@ -521,8 +574,19 @@ try {
     .getByRole("dialog")
     .getByRole("button", { name: "Generate video", exact: true })
     .click();
+  await page.waitForURL(/#new\//);
+  await page
+    .getByRole("region", { name: "Your video’s progress" })
+    .getByRole("heading", { name: "An offline espresso fixture" })
+    .waitFor();
+  assert.equal(await page.getByLabel("Describe your video").isDisabled(), true);
+  await screenshot(page, "generation-progress-dark");
+  await page
+    .getByRole("button", { name: "View activity and recovery" })
+    .click();
   await page.getByRole("dialog", { name: "Activity", exact: true }).waitFor();
   await screenshot(page, "activity-dark");
+  await writeFile(path.join(temporary, "finish-generation"), "ready");
   await page.waitForURL(/#video\//);
   assert.equal(
     (await readFile(log, "utf8"))
@@ -546,6 +610,9 @@ try {
     .getByRole("button", { name: "Generate video", exact: true })
     .click();
   await page
+    .getByRole("button", { name: "View activity and recovery" })
+    .click();
+  await page
     .getByRole("dialog", { name: "Activity", exact: true })
     .getByText("Needs attention", { exact: true })
     .waitFor();
@@ -560,11 +627,25 @@ try {
     .getByRole("dialog")
     .getByRole("button", { name: "Generate video", exact: true })
     .click();
+  await page.waitForURL(/#new\//);
+  await page
+    .getByRole("button", { name: "View activity and recovery" })
+    .click();
   await page
     .getByRole("dialog", { name: "Activity", exact: true })
+    .locator(".pill")
     .getByText("Generating", { exact: true })
     .waitFor();
   await page.reload();
+  await page
+    .getByRole("region", { name: "Your video’s progress" })
+    .getByRole("heading", { name: "offline cancel fixture" })
+    .waitFor();
+  assert.equal(
+    await page.getByLabel("Describe your video").isDisabled(),
+    true,
+    "refresh must not offer duplicate generation",
+  );
   await page
     .getByRole("button", { name: "1 in progress", exact: true })
     .click();
@@ -597,9 +678,27 @@ try {
       .waitFor();
     await screenshot(page, `scenes-mobile-${width}`);
     await page
+      .getByRole("button", { name: "Customize scene", exact: true })
+      .click();
+    assert.equal(
+      await page
+        .getByRole("complementary", { name: "Video details" })
+        .isVisible(),
+      false,
+    );
+    assert.equal(
+      await page.locator(".mobile-primary").isVisible(),
+      false,
+      "scene sheet must not be covered by the pinned editor action",
+    );
+    await screenshot(page, `scene-customize-mobile-${width}`);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Scenes", exact: true }).click();
+    await page
       .getByRole("button", { name: "Close video details", exact: true })
       .click();
     await page.getByRole("button", { name: "Export MP4", exact: true }).click();
+    await screenshot(page, `export-options-mobile-${width}`);
     await page
       .getByRole("button", { name: "Download current MP4", exact: true })
       .click();
@@ -647,12 +746,26 @@ try {
     const emptyPage = await browser.newPage({
       viewport: { width: 1440, height: 900 },
       colorScheme: "light",
+      deviceScaleFactor: 2,
     });
     await emptyPage.goto(`http://127.0.0.1:${port}`);
     await emptyPage
       .getByRole("heading", { name: "Describe the video you want" })
       .waitFor();
     await screenshot(emptyPage, "first-run-light");
+    await emptyPage
+      .getByRole("link", { name: "View setup instructions" })
+      .click();
+    await emptyPage.getByText("Not configured", { exact: true }).waitFor();
+    await emptyPage.getByRole("button", { name: "View instructions" }).click();
+    await emptyPage.getByText("OPENROUTER_API_KEY", { exact: true }).waitFor();
+    await screenshot(emptyPage, "setup-instructions-light");
+    await emptyPage.keyboard.press("Escape");
+    await emptyPage.getByRole("button", { name: "Recheck setup" }).click();
+    await emptyPage
+      .getByText("Generation setup was rechecked.", { exact: true })
+      .waitFor();
+    await emptyPage.getByText("Not configured", { exact: true }).waitFor();
     await emptyPage
       .getByRole("link", { name: "Projects", exact: true })
       .click();

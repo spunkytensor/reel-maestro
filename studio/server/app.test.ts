@@ -538,6 +538,8 @@ test("revision planning preserves canonical ids and executes the immutable appro
   assert.equal(approved.statusCode, 202, approved.body);
   const created = object(JSON.parse(approved.body));
   assert.equal(created.sourceRunId, runId);
+  assert.equal(created.title, "Source");
+  assert.equal(created.operation, "apply");
   const finished = await waitFor(h.app, session, text(created.id), [
     "succeeded",
   ]);
@@ -1332,6 +1334,8 @@ test("shutdown interrupts active work and restart never retries it", async () =>
   ]);
   assert.equal(interrupted.status, "interrupted");
   await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(interrupted.title, "hold for shutdown");
+  assert.equal(interrupted.operation, "generate");
   const after = (await logRecords(h.log)).filter(
     (record) => record.mode === "generate",
   ).length;
@@ -1487,6 +1491,10 @@ function plan(value: unknown): Plan {
 function job(value: unknown): Job {
   const result = object(value);
   const status = result.status;
+  const operation = result.operation;
+  assert.ok(
+    operation === "generate" || operation === "apply" || operation === "export",
+  );
   assert.ok(
     status === "queued" ||
       status === "running" ||
@@ -1501,6 +1509,8 @@ function job(value: unknown): Job {
     status,
     createdAt: text(result.createdAt),
     updatedAt: text(result.updatedAt),
+    title: text(result.title),
+    operation,
     ...(typeof result.runId === "string" ? { runId: result.runId } : {}),
     ...(typeof result.sourceRunId === "string"
       ? { sourceRunId: result.sourceRunId }
