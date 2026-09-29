@@ -17,12 +17,15 @@ fi
 
 # --- Rust toolchain (MSRV 1.88) -----------------------------------------
 # Debian 12 orbs do not ship Rust; install via rustup if missing.
+# Load an earlier setup's installation before deciding whether Rust is absent.
+# shellcheck disable=SC1090,SC1091
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 if ! command -v cargo >/dev/null 2>&1; then
   echo "==> Installing Rust toolchain via rustup"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain 1.88.0 --profile minimal --component clippy,rustfmt
 fi
-# shellcheck disable=SC1090,SC1091
+# The installer creates this file during the current run.
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
 # Ensure clippy and rustfmt are present even on a pre-existing toolchain.
@@ -39,32 +42,10 @@ if ! command -v ffprobe >/dev/null 2>&1; then
   sudo apt-get install -y -qq ffmpeg
 fi
 
-# --- CI / supply-chain cargo tools --------------------------------------
-# Match the tooling in CONTRIBUTING.md: cargo deny / audit / cyclonedx.
-# cargo-binstall fetches prebuilt binaries when available, else builds from source.
-if ! command -v cargo-binstall >/dev/null 2>&1; then
-  curl -L --proto '=https' --tlsv1.2 -sSf \
-    https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash || true
-fi
-for tool in cargo-deny cargo-audit cargo-cyclonedx; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "==> Installing $tool"
-    cargo binstall -y "$tool" 2>/dev/null || cargo install --locked "$tool" || true
-  fi
-done
-
-# --- Optional: local caption timing -------------------------------------
-# whisper-timestamped provides local word-level caption timing (not an API call).
-# Optional; do not fail orb setup if it cannot be installed.
-if ! command -v whisper_timestamped >/dev/null 2>&1; then
-  echo "==> Installing whisper-timestamped (optional)"
-  pip install --quiet --user whisper-timestamped >/dev/null 2>&1 || \
-    echo "==> whisper-timestamped install skipped (captions can still be disabled with --no-captions)"
-fi
-
 # --- Warm the build cache -----------------------------------------------
-echo "==> Fetching dependencies and building"
-cargo fetch --locked
+echo "==> Building Reel Maestro"
+# `cargo build` fetches missing dependencies itself. Optional caption and CI
+# tools are intentionally left to the documented opt-in setup in CONTRIBUTING.md.
 cargo build --locked
 
 echo "==> Reel Maestro orb setup complete"
