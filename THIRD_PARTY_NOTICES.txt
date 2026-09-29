@@ -1,0 +1,50 @@
+Reel Maestro third-party acknowledgments
+======================================
+
+Reel Maestro remains Apache-2.0; dependencies and bundled assets retain their
+own licenses. This is an initial attribution inventory, NOT a complete generated
+dependency notice bundle or a certification of distribution compliance.
+
+Bundled fonts
+-------------
+Inter: Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter).
+JetBrains Mono: Copyright 2020 The JetBrains Mono Project Authors
+(https://github.com/JetBrains/JetBrainsMono).
+The Latin-subset WOFF2 files in docs/design/src/assets/fonts are bundled by the
+Studio build. Both are SIL Open Font License 1.1; full license/copyright texts
+are in LICENSES/Inter-OFL.txt and LICENSES/JetBrainsMono-OFL.txt.
+Exact subset source/version provenance still needs confirmation.
+License text sources (immutable upstream commits):
+https://github.com/rsms/inter/blob/353b61b9f4430d5f420d56605a6e7993e0941470/LICENSE.txt
+https://github.com/JetBrains/JetBrainsMono/blob/19371302b95d218af43299bce79ddbddd0bc364d/OFL.txt
+
+Container-only components
+-------------------------
+OpenAI Whisper code and base model: Copyright (c) 2022 OpenAI, MIT license.
+See LICENSES/Whisper-MIT.txt, copied from:
+https://github.com/openai/whisper/blob/31243bad24cc746f07d4c8bfdd2d974872cb1803/LICENSE
+The base.pt SHA256 is
+ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e.
+The Dockerfile records its download URL; it is not a source-lockfile package.
+
+FFmpeg/ffprobe and native libraries, Python, Node, DejaVu fonts, and Debian
+packages retain upstream terms and installed notices (including
+/usr/share/doc/*/copyright). FFmpeg build configuration and GPL/LGPL source
+delivery obligations must be reviewed for each redistributed image.
+whisper-timestamped (https://github.com/linto-ai/whisper-timestamped) is AGPL-3.0;
+its source-delivery/network-use obligations need distribution-specific review.
+Python distributions, including PyTorch and its native libraries, are installed
+under /opt/whisper; retain their installed license metadata and notices.
+
+Resolved dependencies and remaining review
+-----------------------------------------
+Cargo.lock, studio/package-lock.json, and docker/requirements-whisper.txt record
+Rust, Node, and Python inputs. Scan evidence is described in docs/security-baseline.md.
+Rust static linking and Studio frontend bundling require resolved-dependency
+copyright/license/NOTICE collection before redistributing binaries or web bundles.
+The package lists and Trivy SBOMs do not replace those required texts.
+
+MiniMax H3 weights are operator-provisioned, not shipped. Hosted OpenRouter/model
+services and generated outputs are subject to provider-specific terms, not
+Reel Maestro's license. Other repository media/design asset provenance remains
+an explicit review item. See docs/security-baseline.md for release gates.

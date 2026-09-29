@@ -73,6 +73,8 @@ COPY --from=studio-build /build/studio/node_modules ./studio/node_modules
 COPY --from=studio-build /build/studio/server-dist ./studio/server
 COPY --from=studio-build /build/studio/web/dist ./studio/web/dist
 COPY LICENSE ./LICENSE
+COPY THIRD_PARTY_NOTICES.txt ./THIRD_PARTY_NOTICES.txt
+COPY LICENSES ./LICENSES
 COPY docker/healthcheck.js /usr/local/lib/reelmaestro/healthcheck.js
 COPY --chmod=0755 docker/offline-fixture.sh /usr/local/lib/reelmaestro/offline-fixture.sh
 

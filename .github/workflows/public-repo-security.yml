@@ -1,0 +1,44 @@
+name: Spunky Tensor security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '9 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: high
+
+  source:
+    uses: spunkytensor/.github/.github/workflows/trivy.yml@69b5f260fb4358acb0e2f7b2a96254ad9cc2322c
+
+  coverage:
+    needs: source
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: security-source
+          path: security-source
+      - name: Reconcile source inventory against Cargo.lock
+        run: python3 .github/scripts/check-source-inventory.py security-source/trivy.json
+      - name: Test inventory reconciliation and image gate
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v

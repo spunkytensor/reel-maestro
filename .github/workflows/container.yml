@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '9 9 * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,7 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Record host-compatible IDs
         id: ids
@@ -49,6 +53,10 @@ jobs:
             echo "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e  $HOME/.cache/whisper/base.pt" | sha256sum -c -
             test ! -e /app/src
             test ! -e /app/Cargo.toml
+            test -s /app/THIRD_PARTY_NOTICES.txt
+            test -s /app/LICENSES/Inter-OFL.txt
+            test -s /app/LICENSES/JetBrainsMono-OFL.txt
+            test -s /app/LICENSES/Whisper-MIT.txt
           '
 
       - name: Verify offline Studio readiness
@@ -72,10 +80,25 @@ jobs:
             reel-maestro:ci
           test -s container-output/docker-offline-fixture/reel.mp4
 
-      - name: Scan image vulnerabilities
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0
+          cache: false
+
+      - name: Scan image and retain inventory
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
         run: |
-          docker run --rm \
-            --volume /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.67.2 image \
-            --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL \
-            reel-maestro:ci
+          script="$GITHUB_WORKSPACE/.github/scripts/scan-image.sh"
+          cd "$RUNNER_TEMP"
+          bash "$script"
+
+      - name: Retain image security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-runtime-linux-amd64
+          path: ${{ runner.temp }}/security-runtime/
+          if-no-files-found: error
+          retention-days: 30
