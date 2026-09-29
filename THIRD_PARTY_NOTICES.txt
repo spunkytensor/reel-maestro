@@ -12,7 +12,8 @@ JetBrains Mono: Copyright 2020 The JetBrains Mono Project Authors
 (https://github.com/JetBrains/JetBrainsMono).
 The Latin-subset WOFF2 files in docs/design/src/assets/fonts are bundled by the
 Studio build. Both are SIL Open Font License 1.1; full license/copyright texts
-are in LICENSES/Inter-OFL.txt and LICENSES/JetBrainsMono-OFL.txt.
+are in studio/web/public/licenses/Inter.txt and JetBrainsMono.txt, served by
+Studio under /licenses/ and retained in /app/studio/web/dist/licenses in Docker.
 Exact subset source/version provenance still needs confirmation.
 License text sources (immutable upstream commits):
 https://github.com/rsms/inter/blob/353b61b9f4430d5f420d56605a6e7993e0941470/LICENSE.txt

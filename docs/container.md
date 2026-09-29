@@ -161,14 +161,19 @@ sent in the Docker build context. Inspect effective configuration before startup
 Rust uses `Cargo.lock`, Studio uses `package-lock.json`, Python requirements are fully pinned, and
 the base images and default model are digest/checksum pinned. CI builds and smoke-tests the image,
 runs the Node production dependency audit, and scans the resulting OS/application image for
-high/critical known vulnerabilities. Locally, equivalent checks are:
+High/Critical known vulnerabilities, including unfixed findings. Locally, reproduce
+the vulnerability gate with Trivy 0.74.0 installed:
 
 ```sh
 npm --prefix studio audit --omit=dev --audit-level=high
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  aquasec/trivy:0.67.2 image --exit-code 1 --ignore-unfixed \
+trivy image --image-src docker --scanners vuln --ignorefile /dev/null \
+  --exit-code 1 --ignore-unfixed=false \
   --severity HIGH,CRITICAL reel-maestro:local
 ```
+
+CI also generates both SBOM formats and checks representative image inventory;
+see [Spunky Tensor security](security-baseline.md) for retained evidence and
+the distinction between rebuilt CI images and supported released-image scans.
 
 The image includes components under their own terms: Reel Maestro (Apache-2.0), Node.js and npm
 packages (their package metadata/licenses), Rust dependencies (`Cargo.lock` plus crate metadata),

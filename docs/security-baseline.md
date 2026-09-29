@@ -50,7 +50,9 @@ Python and OS coverage comes from the image scan. Source/build dependencies are
 not a claim about exactly what remains linked into the release binary.
 
 [THIRD_PARTY_NOTICES.txt](../THIRD_PARTY_NOTICES.txt) and full font/Whisper license
-texts are included in source packaging and copied into `/app` in the image.
+texts are included in source packaging. Notices and the Whisper license are copied
+into `/app` in the image; existing full font licenses remain in Studio's
+`/app/studio/web/dist/licenses/` and are served under `/licenses/`.
 Existing installed package notices are preserved. Remaining release work:
 
 1. Generate and review complete resolved third-party texts (ORT/ScanCode pilot or
@@ -75,8 +77,11 @@ Existing installed package notices are preserved. Remaining release work:
 
 Verify dependency graph, Dependabot alerts/security updates, secret scanning/push
 protection, and the working private reporting route. Verify dependency review,
-configure CodeQL for supported languages, branch required checks/reviews, workflow/policy
+CodeQL configuration, branch required checks/reviews, workflow/policy
 ownership, maintainer 2FA/access review, and periodic Scorecard as appropriate.
+Hosted CodeQL checks for Actions, JavaScript/TypeScript and Rust were observed on
+the rollout PR; reading their default-setup settings returned HTTP 403, so this PR
+does not assert or alter those settings.
 These settings and owner/legal assignments are not changed by this PR. Existing
 non-security workflows still have mutable action refs to migrate in review.
 

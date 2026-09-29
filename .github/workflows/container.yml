@@ -54,8 +54,8 @@ jobs:
             test ! -e /app/src
             test ! -e /app/Cargo.toml
             test -s /app/THIRD_PARTY_NOTICES.txt
-            test -s /app/LICENSES/Inter-OFL.txt
-            test -s /app/LICENSES/JetBrainsMono-OFL.txt
+            test -s /app/studio/web/dist/licenses/Inter.txt
+            test -s /app/studio/web/dist/licenses/JetBrainsMono.txt
             test -s /app/LICENSES/Whisper-MIT.txt
           '
 
