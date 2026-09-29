@@ -421,7 +421,6 @@ export function Editor({
                 aria-expanded={customize}
                 onClick={() => {
                   setCustomize(true);
-                  setMobileScenes(false);
                 }}
               >
                 Customize scene
@@ -432,7 +431,6 @@ export function Editor({
                 onClick={() => {
                   setFinishing(true);
                   setCustomize(false);
-                  setMobileScenes(false);
                 }}
               >
                 Customize video

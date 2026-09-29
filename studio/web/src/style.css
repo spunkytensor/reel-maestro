@@ -792,6 +792,9 @@ html[data-motion="reduce"] *::after {
   .editor-workspace .side {
     display: none;
   }
+  .editor-workspace:has(.overlay) .side {
+    visibility: hidden;
+  }
   .editor-workspace.show-scenes .side {
     display: flex;
     position: fixed;

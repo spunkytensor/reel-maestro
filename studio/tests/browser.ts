@@ -693,7 +693,13 @@ try {
     );
     await screenshot(page, `scene-customize-mobile-${width}`);
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Scenes", exact: true }).click();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Customize scene", exact: true })
+        .evaluate((element) => element === document.activeElement),
+      true,
+      "closing the inspector restores focus to the scene drawer",
+    );
     await page
       .getByRole("button", { name: "Close video details", exact: true })
       .click();
