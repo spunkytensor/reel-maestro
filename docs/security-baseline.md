@@ -4,7 +4,7 @@ Owner: Spunky Tensor maintainers. Supported versions remain the latest release a
 `main` until 1.0, as specified in [SECURITY.md](../SECURITY.md). No licensing or
 support contract is changed by this rollout.
 
-Baseline: [69b5f260fb4358acb0e2f7b2a96254ad9cc2322c](https://github.com/spunkytensor/.github/commit/69b5f260fb4358acb0e2f7b2a96254ad9cc2322c).
+Baseline: [ed53814ed23f76c11fa4a91f57f99de903c18bfc](https://github.com/spunkytensor/.github/commit/ed53814ed23f76c11fa4a91f57f99de903c18bfc).
 This is partial implementation, not a compliance certification.
 
 ## Delivered checks and evidence
@@ -29,8 +29,8 @@ This is partial implementation, not a compliance certification.
   the corresponding workflow run; there is no durable release-SBOM download yet.
 - Dependabot covers Cargo, npm, Python, Docker and GitHub Actions. The changed
   security workflows pin actions and use read-only tokens without publish secrets.
-- Dependency review blocks newly introduced High/Critical findings on PRs;
-  availability still depends on the repository's dependency graph settings.
+- Full-inventory Trivy scanning replaces the service-dependent dependency-review
+  gate; no paid private-repository security add-on is required.
 
 Nightly runs start only after merge to the default branch. Check the linked runs
 for last successful scans; no successful nightly run is claimed by this PR.
@@ -75,13 +75,11 @@ Existing installed package notices are preserved. Remaining release work:
 
 ## Maintainer/admin work still required
 
-Verify dependency graph, Dependabot alerts/security updates, secret scanning/push
-protection, and the working private reporting route. Verify dependency review,
-CodeQL configuration, branch required checks/reviews, workflow/policy
+Verify Dependabot alerts/security updates, secret scanning/push protection, and
+the working private reporting route. Verify branch required checks/reviews, workflow/policy
 ownership, maintainer 2FA/access review, and periodic Scorecard as appropriate.
-Hosted CodeQL checks for Actions, JavaScript/TypeScript and Rust were observed on
-the rollout PR; reading their default-setup settings returned HTTP 403, so this PR
-does not assert or alter those settings.
+Hosted CodeQL may remain supplemental in public repositories, but is not required
+by this private-compatible baseline.
 These settings and owner/legal assignments are not changed by this PR. Existing
 non-security workflows still have mutable action refs to migrate in review.
 
