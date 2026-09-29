@@ -6,7 +6,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --locked
 
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS studio-build
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS studio-build
 WORKDIR /build/studio
 COPY studio/package.json studio/package-lock.json ./
 RUN npm ci
@@ -19,7 +19,7 @@ RUN npm run build \
       --outfile=server-dist/index.js \
     && npm prune --omit=dev
 
-FROM python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84 AS whisper-build
+FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b AS whisper-build
 ENV VIRTUAL_ENV=/opt/whisper
 RUN python -m venv "$VIRTUAL_ENV"
 COPY docker/requirements-whisper.txt /tmp/requirements-whisper.txt
@@ -32,7 +32,7 @@ RUN "$VIRTUAL_ENV/bin/pip" install --disable-pip-version-check --no-cache-dir \
     && "$VIRTUAL_ENV/bin/pip" check \
     && "$VIRTUAL_ENV/bin/pip" uninstall --yes pip setuptools wheel
 
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime
 
 ARG REELMAESTRO_UID=1000
 ARG REELMAESTRO_GID=1000
