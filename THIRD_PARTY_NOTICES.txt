@@ -28,10 +28,14 @@ The base.pt SHA256 is
 ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e.
 The Dockerfile records its download URL; it is not a source-lockfile package.
 
-FFmpeg/ffprobe and native libraries, Python, Node, DejaVu fonts, and Debian
-packages retain upstream terms and installed notices (including
-/usr/share/doc/*/copyright). FFmpeg build configuration and GPL/LGPL source
-delivery obligations must be reviewed for each redistributed image.
+FFmpeg/ffprobe 9.0.2: Copyright (c) the FFmpeg developers, GPL-3.0-or-later
+for this build with libass and x264. The verified upstream source archive,
+COPYING.GPLv3, build configuration and recipe are retained in the image under
+/usr/share/reelmaestro/sources/. Source: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+The local loudnorm silence patch is included there under the same GPL terms.
+Native libraries, Python, Node, DejaVu fonts, and Wolfi packages retain upstream
+terms and installed notices. Corresponding source obligations for linked GPL
+libraries must also be reviewed for each redistributed image.
 whisper-timestamped (https://github.com/linto-ai/whisper-timestamped) is AGPL-3.0;
 its source-delivery/network-use obligations need distribution-specific review.
 Python distributions, including PyTorch and its native libraries, are installed

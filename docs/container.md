@@ -5,6 +5,16 @@ server, Rust CLI, ffmpeg/ffprobe with libass, DejaVu fonts, CA roots, and a dedi
 Whisper environment. Host Cargo, Node, Python, ffmpeg, source code, and virtual environments are
 not mounted or required at runtime.
 
+The runtime uses Wolfi's glibc packages with Node 22 and Python 3.11. FFmpeg 9.0.2
+is compiled with libass, x264, and MP3 support and installed as a local APK, so it
+remains visible to the package inventory and vulnerability scanner. Its source
+archive, GPL text, configuration, and build recipe are retained under
+`/usr/share/reelmaestro/sources/`. The local package uses revision `r0`; it does
+not claim Wolfi's downstream patch revisions or signatures.
+The included `ffmpeg-loudnorm-silence.patch` leaves below-gate short audio at
+unity gain; audible audio retains FFmpeg's normalization. Container CI verifies
+finite silent output, audible normalization, AAC encoding, and caption rendering.
+
 ## Install and start
 
 Install Docker Engine with Compose 2.24 or newer, then run from the repository root:
@@ -101,7 +111,7 @@ SQLite, the Rust executable, ffmpeg/ffprobe, and Whisper without contacting Open
 provider. Provider configuration is informational and never makes a paid health-check request.
 
 Run the image's no-network fixture to exercise ffmpeg and the Rust resume/render path. It creates
-a synthetic vertical video in the host mount and makes no model-provider calls:
+a synthetic captioned vertical video in the host mount and makes no model-provider calls:
 
 ```sh
 docker compose run --rm --entrypoint /usr/local/lib/reelmaestro/offline-fixture.sh cli
@@ -177,7 +187,7 @@ the distinction between rebuilt CI images and supported released-image scans.
 
 The image includes components under their own terms: Reel Maestro (Apache-2.0), Node.js and npm
 packages (their package metadata/licenses), Rust dependencies (`Cargo.lock` plus crate metadata),
-FFmpeg and its Debian-linked libraries (LGPL/GPL depending on the packaged build), DejaVu fonts
+FFmpeg (GPL-3.0-or-later in this build) and its Wolfi-linked libraries, DejaVu fonts
 (the DejaVu font license), Python packages including PyTorch and whisper-timestamped (their
 package licenses), and OpenAI Whisper code/checkpoints (MIT). Frontend font license notices are
 served under `/licenses/`. Before redistribution, generate an SBOM/license inventory and review

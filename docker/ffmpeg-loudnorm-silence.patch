@@ -1,0 +1,19 @@
+--- a/libavfilter/af_loudnorm.c
++++ b/libavfilter/af_loudnorm.c
+@@ -459,8 +459,13 @@
+         }
+ 
+-        offset    = pow(10., (s->target_i - global) / 20.);
+-        offset_tp = true_peak * offset;
+-        s->offset = offset_tp < s->target_tp ? offset : s->target_tp / true_peak;
++        /* Below the loudness gate there is no meaningful gain to apply. */
++        if (isfinite(global)) {
++            offset    = pow(10., (s->target_i - global) / 20.);
++            offset_tp = true_peak * offset;
++            s->offset = offset_tp < s->target_tp ? offset : s->target_tp / true_peak;
++        } else {
++            s->offset = 1.0;
++        }
+         s->frame_type = LINEAR_MODE;
+     }
+ 

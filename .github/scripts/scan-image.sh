@@ -18,7 +18,7 @@ trivy convert --format cyclonedx --output security-runtime/sbom.cdx.json securit
 # Assert representative OS, Python and production Node coverage, not just nonempty output.
 jq -e '
   [.Results[]?.Packages[]?.Name] as $names |
-  all(["ffmpeg", "python3", "torch", "openai-whisper", "whisper-timestamped", "fastify"][];
+  all(["ffmpeg-9.0", "libass", "python-3.11", "nodejs-22", "torch", "openai-whisper", "whisper-timestamped", "fastify"][];
     . as $name | $names | index($name) != null)
 ' security-runtime/trivy.json
 count=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' security-runtime/trivy.json)

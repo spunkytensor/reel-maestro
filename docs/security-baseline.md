@@ -57,7 +57,7 @@ Existing installed package notices are preserved. Remaining release work:
 
 1. Generate and review complete resolved third-party texts (ORT/ScanCode pilot or
    equivalent), including statically linked Rust, bundled frontend code, Python
-   native libraries and Debian packages. cargo-deny license metadata is not this
+   native libraries and Wolfi packages. cargo-deny license metadata is not this
    notice bundle. Review AGPL whisper-timestamped and FFmpeg GPL/LGPL source
    obligations, applicable upstream NOTICE files, fonts/subset provenance, model
    terms, and media/design asset provenance. Do not infer legal approval here.
