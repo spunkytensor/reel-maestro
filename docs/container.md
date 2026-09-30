@@ -5,6 +5,16 @@ server, Rust CLI, ffmpeg/ffprobe with libass, DejaVu fonts, CA roots, and a dedi
 Whisper environment. Host Cargo, Node, Python, ffmpeg, source code, and virtual environments are
 not mounted or required at runtime.
 
+The runtime uses Wolfi's glibc packages with Node 22 and Python 3.11. FFmpeg 9.0.2
+is compiled with libass, x264, and MP3 support and installed as a local APK, so it
+remains visible to the package inventory and vulnerability scanner. Its source
+archive, GPL text, configuration, and build recipe are retained under
+`/usr/share/reelmaestro/sources/`. The local package uses revision `r0`; it does
+not claim Wolfi's downstream patch revisions or signatures.
+The included `ffmpeg-loudnorm-silence.patch` leaves below-gate short audio at
+unity gain; audible audio retains FFmpeg's normalization. Container CI verifies
+finite silent output, audible normalization, AAC encoding, and caption rendering.
+
 ## Install and start
 
 Install Docker Engine with Compose 2.24 or newer, then run from the repository root:
@@ -101,7 +111,7 @@ SQLite, the Rust executable, ffmpeg/ffprobe, and Whisper without contacting Open
 provider. Provider configuration is informational and never makes a paid health-check request.
 
 Run the image's no-network fixture to exercise ffmpeg and the Rust resume/render path. It creates
-a synthetic vertical video in the host mount and makes no model-provider calls:
+a synthetic captioned vertical video in the host mount and makes no model-provider calls:
 
 ```sh
 docker compose run --rm --entrypoint /usr/local/lib/reelmaestro/offline-fixture.sh cli
@@ -161,18 +171,23 @@ sent in the Docker build context. Inspect effective configuration before startup
 Rust uses `Cargo.lock`, Studio uses `package-lock.json`, Python requirements are fully pinned, and
 the base images and default model are digest/checksum pinned. CI builds and smoke-tests the image,
 runs the Node production dependency audit, and scans the resulting OS/application image for
-high/critical known vulnerabilities. Locally, equivalent checks are:
+High/Critical known vulnerabilities, including unfixed findings. Locally, reproduce
+the vulnerability gate with Trivy 0.74.0 installed:
 
 ```sh
 npm --prefix studio audit --omit=dev --audit-level=high
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  aquasec/trivy:0.67.2 image --exit-code 1 --ignore-unfixed \
+trivy image --image-src docker --scanners vuln --ignorefile /dev/null \
+  --exit-code 1 --ignore-unfixed=false \
   --severity HIGH,CRITICAL reel-maestro:local
 ```
 
+CI also generates both SBOM formats and checks representative image inventory;
+see [Spunky Tensor security](security-baseline.md) for retained evidence and
+the distinction between rebuilt CI images and supported released-image scans.
+
 The image includes components under their own terms: Reel Maestro (Apache-2.0), Node.js and npm
 packages (their package metadata/licenses), Rust dependencies (`Cargo.lock` plus crate metadata),
-FFmpeg and its Debian-linked libraries (LGPL/GPL depending on the packaged build), DejaVu fonts
+FFmpeg (GPL-3.0-or-later in this build) and its Wolfi-linked libraries, DejaVu fonts
 (the DejaVu font license), Python packages including PyTorch and whisper-timestamped (their
 package licenses), and OpenAI Whisper code/checkpoints (MIT). Frontend font license notices are
 served under `/licenses/`. Before redistribution, generate an SBOM/license inventory and review

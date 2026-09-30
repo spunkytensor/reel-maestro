@@ -759,6 +759,11 @@ opening a PR so local checks, generated artifacts, and license expectations stay
 Please do not open public issues containing secrets or vulnerability details. See
 [SECURITY.md](SECURITY.md) for supported versions and private reporting guidance.
 
+[Spunky Tensor security](docs/security-baseline.md) documents nightly CVE checks,
+SBOM evidence downloads, artifact coverage, and remaining release/admin work.
+See [third-party notices](THIRD_PARTY_NOTICES.txt) for bundled assets and dependency
+attribution status; scan success is not a license-compliance certification.
+
 ## Credits and cross-references
 
 - [OpenRouter](https://openrouter.ai/) provides the hosted text, image, speech, music, and

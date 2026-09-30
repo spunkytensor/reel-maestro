@@ -1,12 +1,22 @@
 # syntax=docker/dockerfile:1.7
 
+ARG WOLFI_BASE=cgr.dev/chainguard/wolfi-base@sha256:42c1bedc56d25685b394a7a860817feb3641bae4121681697a6237290472ba11
+
 FROM rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-build
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release --locked
 
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS studio-build
+FROM ${WOLFI_BASE} AS media-build
+RUN apk add --no-cache build-base nasm pkgconf curl xz gnutar coreutils patch \
+      libass-dev freetype-dev fontconfig-dev harfbuzz-dev lame-dev \
+      x264-dev openssl-dev python-3.11=3.11.16-r8
+COPY docker/build-ffmpeg.sh /build-ffmpeg.sh
+COPY docker/ffmpeg-loudnorm-silence.patch /ffmpeg-loudnorm-silence.patch
+RUN sh /build-ffmpeg.sh
+
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS studio-build
 WORKDIR /build/studio
 COPY studio/package.json studio/package-lock.json ./
 RUN npm ci
@@ -19,9 +29,10 @@ RUN npm run build \
       --outfile=server-dist/index.js \
     && npm prune --omit=dev
 
-FROM python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84 AS whisper-build
+FROM ${WOLFI_BASE} AS whisper-build
 ENV VIRTUAL_ENV=/opt/whisper
-RUN python -m venv "$VIRTUAL_ENV"
+RUN apk add --no-cache python-3.11=3.11.16-r8 build-base python-3.11-dev=3.11.16-r8 \
+    && python3.11 -m venv "$VIRTUAL_ENV"
 COPY docker/requirements-whisper.txt /tmp/requirements-whisper.txt
 RUN "$VIRTUAL_ENV/bin/pip" install --disable-pip-version-check --no-cache-dir \
       pip==24.0 setuptools==80.9.0 wheel==0.45.1 \
@@ -32,24 +43,23 @@ RUN "$VIRTUAL_ENV/bin/pip" install --disable-pip-version-check --no-cache-dir \
     && "$VIRTUAL_ENV/bin/pip" check \
     && "$VIRTUAL_ENV/bin/pip" uninstall --yes pip setuptools wheel
 
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
+FROM ${WOLFI_BASE} AS runtime
 
 ARG REELMAESTRO_UID=1000
 ARG REELMAESTRO_GID=1000
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      ffmpeg \
-      fonts-dejavu-core \
-      python3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+COPY --from=media-build /packages/ /tmp/packages/
+COPY --from=media-build /sources/ /usr/share/reelmaestro/sources/
+COPY docker/build-ffmpeg.sh /usr/share/reelmaestro/sources/build-ffmpeg.sh
+RUN apk add --no-cache \
+      ca-certificates nodejs-22=22.23.2-r1 python-3.11=3.11.16-r8 \
+      ttf-dejavu=2.37-r9 libstdc++ libgomp \
+    && apk add --no-cache --allow-untrusted /tmp/packages/ffmpeg-9.0-9.0.2-r0.apk \
+    && rm -rf /tmp/packages \
     && test "$REELMAESTRO_UID" -ne 0 \
     && test "$REELMAESTRO_GID" -ne 0 \
-    && userdel --remove node \
-    && groupadd --non-unique --gid "$REELMAESTRO_GID" reelmaestro \
-    && useradd --non-unique --uid "$REELMAESTRO_UID" --gid "$REELMAESTRO_GID" \
-      --create-home --home-dir /home/reelmaestro reelmaestro \
+    && addgroup -g "$REELMAESTRO_GID" reelmaestro \
+    && adduser -D -u "$REELMAESTRO_UID" -G reelmaestro -h /home/reelmaestro reelmaestro \
+    && mkdir -p /usr/local/bin \
     && ln -s /usr/bin/python3 /usr/local/bin/python \
     && mkdir -p /data/out /data/state /home/reelmaestro/.cache/whisper \
     && chown -R reelmaestro:reelmaestro /data /home/reelmaestro/.cache
@@ -73,6 +83,8 @@ COPY --from=studio-build /build/studio/node_modules ./studio/node_modules
 COPY --from=studio-build /build/studio/server-dist ./studio/server
 COPY --from=studio-build /build/studio/web/dist ./studio/web/dist
 COPY LICENSE ./LICENSE
+COPY THIRD_PARTY_NOTICES.txt ./THIRD_PARTY_NOTICES.txt
+COPY LICENSES ./LICENSES
 COPY docker/healthcheck.js /usr/local/lib/reelmaestro/healthcheck.js
 COPY --chmod=0755 docker/offline-fixture.sh /usr/local/lib/reelmaestro/offline-fixture.sh
 

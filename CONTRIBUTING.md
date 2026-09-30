@@ -64,8 +64,15 @@ Keep local bearer credentials, manifests, and generated media out of Git.
 
 ## Security artifacts
 
-The CVE Audit workflow checks the Rust dependency lockfile on pushes, pull requests, and a weekly
-schedule. It uploads its RustSec/CVE results as `cargo-audit.json`.
+The CVE Audit workflow checks the Rust dependency lockfile on pushes, pull requests, and nightly
+at 09:09 UTC. It uploads its RustSec/CVE results as `cargo-audit.json`.
+
+The pinned shared **Spunky Tensor security** caller runs at the same time and on PRs/main
+pushes. It retains source SPDX/CycloneDX SBOMs and full Trivy results; Container CI retains
+equivalent evidence for its local image and blocks unfixed High/Critical findings too.
+See [coverage and release gates](docs/security-baseline.md) before distributing artifacts.
+Validate workflow changes with `actionlint`, and run
+`python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v` for inventory/gate checks.
 
 CI separately runs the dependency policy check and uploads a CycloneDX 1.5 SBOM as
 `reelmaestro-sbom.cdx.json`.

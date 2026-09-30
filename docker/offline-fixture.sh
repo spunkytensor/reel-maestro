@@ -34,13 +34,16 @@ cp "$run_dir/scene-00.jpg" "$run_dir/poster.jpg"
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "anullsrc=r=48000:cl=stereo" -t 2 \
   -codec:a libmp3lame "$run_dir/audio.mp3"
-printf '[]\n' >"$run_dir/words.json"
+printf '[{"word":"Offline captions","start_s":0.1,"end_s":1.8}]\n' >"$run_dir/words.json"
 
 reelmaestro --no-dotenv --from "$run_dir" \
-  --video-provider local --no-captions --no-dissolve --no-grade \
+  --video-provider local --no-dissolve --no-grade \
   --no-embed-poster
 
 test -s "$run_dir/reel.mp4"
+# Exercise libass, not just the presence of an FFmpeg executable.
+test -s "$run_dir/reel.ass"
+grep -qi 'Offline captions' "$run_dir/reel.ass"
 ffprobe -v error -select_streams v:0 \
   -show_entries stream=codec_name,width,height \
   -of default=noprint_wrappers=1 "$run_dir/reel.mp4"
