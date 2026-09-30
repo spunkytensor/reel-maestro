@@ -2,7 +2,7 @@
 
 ARG WOLFI_BASE=cgr.dev/chainguard/wolfi-base@sha256:42c1bedc56d25685b394a7a860817feb3641bae4121681697a6237290472ba11
 
-FROM rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-build
+FROM rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS rust-build
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
