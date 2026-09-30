@@ -39,13 +39,16 @@ class ImageGateTests(unittest.TestCase):
     def test_actual_script_fails_closed_and_retains_reports(self):
         # Stub only external tools; execute the production inventory and CVE gate.
         packages = [{"Name": name} for name in
-                    ["ffmpeg", "python3", "torch", "openai-whisper", "whisper-timestamped", "fastify"]]
+                    ["ffmpeg-9.0", "libass", "python-3.11", "nodejs-22", "torch",
+                     "openai-whisper", "whisper-timestamped", "fastify"]]
         for case, inventory, findings, tool_failure, succeeds in [
             ("clean", packages, [], False, True),
             ("low", packages, [{"Severity": "LOW"}], False, True),
             ("unfixed high", packages, [{"Severity": "HIGH", "FixedVersion": ""}], False, False),
             ("critical", packages, [{"Severity": "CRITICAL"}], False, False),
             ("missing python", packages[:2] + packages[3:], [], False, False),
+            ("missing ffmpeg", packages[1:], [], False, False),
+            ("missing node", packages[:3] + packages[4:], [], False, False),
             ("empty", [], [], False, False),
             ("tool failure", packages, [], True, False),
         ]:
