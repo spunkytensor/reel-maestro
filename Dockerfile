@@ -16,7 +16,7 @@ COPY docker/build-ffmpeg.sh /build-ffmpeg.sh
 COPY docker/ffmpeg-loudnorm-silence.patch /ffmpeg-loudnorm-silence.patch
 RUN sh /build-ffmpeg.sh
 
-FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS studio-build
+FROM node:26-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS studio-build
 WORKDIR /build/studio
 COPY studio/package.json studio/package-lock.json ./
 RUN npm ci
