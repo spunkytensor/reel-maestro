@@ -285,6 +285,11 @@ pub struct Cli {
     #[arg(long)]
     watermark: Option<PathBuf>,
 
+    /// Close the video with this brand image (PNG or JPEG) held for two seconds after the last
+    /// scene, fit inside the frame over black. Works on fresh runs and `--from` resumes.
+    #[arg(long)]
+    end_card: Option<PathBuf>,
+
     #[arg(long)]
     text_model: Option<String>,
     #[arg(long)]
@@ -599,6 +604,10 @@ async fn run(cli: &Cli) -> Result<()> {
     // absolute path — the render runs with the run folder as its working directory.
     let watermark = match &cli.watermark {
         Some(p) => Some(resolve_watermark(p)?),
+        None => None,
+    };
+    let end_card = match &cli.end_card {
+        Some(p) => Some(resolve_end_card(p)?),
         None => None,
     };
 
@@ -1026,6 +1035,7 @@ async fn run(cli: &Cli) -> Result<()> {
         ),
         chapters: &script.chapters,
         watermark: watermark.as_deref(),
+        end_card: end_card.as_deref(),
     })?;
 
     // Long-form: write upload-ready YouTube metadata (title, description, tags, chapter
@@ -1036,7 +1046,12 @@ async fn run(cli: &Cli) -> Result<()> {
             Err(e) => eprintln!("  note: writing youtube.md failed ({e})"),
         }
     } else {
-        match metadata::write_reel_md(&dir, &script, durations.iter().sum()) {
+        let end_card_s = if end_card.is_some() {
+            ffmpeg::END_CARD_SECONDS
+        } else {
+            0.0
+        };
+        match metadata::write_reel_md(&dir, &script, durations.iter().sum::<f64>() + end_card_s) {
             Ok(p) => println!("  metadata: {}", p.display()),
             Err(e) => eprintln!("  note: writing metadata.md failed ({e})"),
         }
@@ -1230,6 +1245,18 @@ fn resolve_watermark(path: &std::path::Path) -> Result<PathBuf> {
             "could not read watermark {} as an image: {e}",
             abs.display()
         ),
+    }
+    Ok(abs)
+}
+
+/// Validate the `--end-card` path and resolve it to an absolute path (the render runs with the run
+/// folder as its working directory). Fails fast — before any paid generation — on a missing file
+/// or one that isn't a readable PNG/JPEG.
+fn resolve_end_card(path: &std::path::Path) -> Result<PathBuf> {
+    let abs = std::fs::canonicalize(path)
+        .with_context(|| format!("could not find end card image {}", path.display()))?;
+    if let Err(e) = image::open(&abs) {
+        bail!("could not read end card {} as an image: {e}", abs.display());
     }
     Ok(abs)
 }

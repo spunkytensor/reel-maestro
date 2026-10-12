@@ -10,6 +10,7 @@ export function UploadField({
   onChange,
   disabled = false,
   onBusyChange,
+  hint,
 }: {
   label: string;
   kind: UploadAsset["kind"];
@@ -17,6 +18,8 @@ export function UploadField({
   onChange: (asset: UploadAsset | undefined) => void;
   disabled?: boolean;
   onBusyChange?: (busy: boolean) => void;
+  /** What the file is for, shown before the rights reminder until a file is chosen. */
+  hint?: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
@@ -100,7 +103,7 @@ export function UploadField({
           ? "Checking and uploading…"
           : value
             ? name || "Your uploaded file is selected."
-            : "Only files you have the rights to use."}
+            : `${hint ? `${hint} ` : ""}Only files you have the rights to use.`}
       </p>
       {value && (
         <button

@@ -1370,6 +1370,7 @@ async function appendAdvancedArgs(
     ["characterReferenceAssetId", "image", "--character-ref"],
     ["musicAssetId", "audio", "--music"],
     ["watermarkAssetId", "image", "--watermark"],
+    ["endCardAssetId", "image", "--end-card"],
   ] as const) {
     const assetId = advanced[name];
     if (assetId) {

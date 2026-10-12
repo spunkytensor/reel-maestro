@@ -66,7 +66,8 @@ installation, see [Docker setup, security, and backups](../docs/container.md).
   and poster concepts. Drafts autosave in this browser and support undo/redo.
 - Explicitly keep/regenerate individual stills and clips; animate selected scene IDs, remove or
   regenerate music, and customize models, timing, caption styling, and finishing. Upload reference
-  images, watermarks, or a soundtrack. Blank revision settings inherit the existing version.
+  images, watermarks, a 2-second closing card, or a soundtrack. Blank revision settings inherit the
+  existing version.
 - Review reuse/regenerate/remove/restyle actions and costs before publishing an immutable version.
   Unknown legacy provenance requires an explicit trust choice. Source/configuration changes reject
   stale approvals; originals are never modified. Compare versions with side-by-side playback.
