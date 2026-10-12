@@ -216,6 +216,7 @@ fn make_plan(mut request: RevisionRequest) -> Result<RevisionPlan> {
     let mut snapshot = snapshot(&source)?;
     for (label, path) in [
         ("watermark", cli.watermark.as_deref()),
+        ("end_card", cli.end_card.as_deref()),
         ("music", cli.music.as_deref()),
         ("character_ref", cli.character_ref.as_deref()),
     ] {
@@ -415,6 +416,9 @@ fn inherit_parent_config(cli: &mut Cli, args: &[String], manifest: &RunManifest)
     }
     if !has("--watermark") {
         cli.watermark = text("watermark").map(PathBuf::from);
+    }
+    if !has("--end-card") {
+        cli.end_card = text("end_card").map(PathBuf::from);
     }
     inherit_toggle(
         args,
@@ -631,6 +635,9 @@ fn effective_revision_arguments(cli: &Cli, cfg: &Config) -> Vec<String> {
     }
     if let Some(path) = &cli.watermark {
         value("--watermark", path.display().to_string());
+    }
+    if let Some(path) = &cli.end_card {
+        value("--end-card", path.display().to_string());
     }
     if let Some(max) = cfg.max_cost {
         value("--max-cost", max.to_string());
@@ -1350,6 +1357,7 @@ fn config_value(cli: &Cli, cfg: &Config) -> Value {
         "caption_font":cfg.caption_font,"whisper_cmd":cfg.whisper_cmd,"whisper_model":cfg.whisper_model,
         "character_ref":canonical_input(cli.character_ref.as_deref()),"character_ref_sha256":cli.character_ref.as_deref().and_then(|path| hash_file(path).ok()),
         "watermark":canonical_input(cli.watermark.as_deref()),"watermark_sha256":cli.watermark.as_deref().and_then(|path| hash_file(path).ok()),
+        "end_card":canonical_input(cli.end_card.as_deref()),"end_card_sha256":cli.end_card.as_deref().and_then(|path| hash_file(path).ok()),
         "mix":format!("{:?}",cli.mix).to_lowercase(),"music_volume":cli.music_volume,
         "dissolve":cli.dissolve || !cli.no_dissolve,"dissolve_seconds":cli.dissolve_seconds,"grade":cli.grade || !cli.no_grade,
         "loudnorm":cli.loudnorm || !cli.no_loudnorm,"poster_scene":cli.poster_scene,"embed_poster":cli.embed_poster || !cli.no_embed_poster,

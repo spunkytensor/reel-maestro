@@ -73,6 +73,10 @@ pub struct BuildOptions<'a> {
     /// Optional watermark image (PNG with alpha), overlaid on the final video, scaled to the
     /// canvas. Applies in both fresh and `--from` runs (it's an assembly-stage overlay).
     pub watermark: Option<&'a Path>,
+    /// Optional closing brand image, held for `ffmpeg::END_CARD_SECONDS` after the last scene
+    /// (fit inside the canvas over black, ungraded and uncaptioned). Like the watermark, it's an
+    /// assembly-stage addition, so it applies in both fresh and `--from` runs.
+    pub end_card: Option<&'a Path>,
 }
 
 /// Build `reel.mp4` in `dir`. `images` are scene stills in order; `audio` and the
@@ -163,6 +167,7 @@ fn build_single_pass(
     // The watermark is an arbitrary user path (not in `dir`), so pass it whole — ffmpeg reads it
     // as a plain `-i` input argument, not inside the filtergraph.
     let watermark = opts.watermark.map(|p| p.to_string_lossy().into_owned());
+    let end_card = opts.end_card.map(|p| p.to_string_lossy().into_owned());
 
     ffmpeg::render_reel(ffmpeg::RenderReelOptions {
         dir: opts.dir,
@@ -180,6 +185,7 @@ fn build_single_pass(
         fontsdir,
         canvas: opts.canvas,
         watermark: watermark.as_deref(),
+        end_card: end_card.as_deref(),
         export_preset: ffmpeg::export_preset(),
         output,
     })?;
@@ -272,6 +278,25 @@ fn build_chunked(
         segments.push(seg_name);
     }
 
+    // The end card is its own segment after the last chapter (same encode params, so the concat
+    // still stream-copies); the mix below pads the narration to cover it.
+    let pad = match opts.end_card {
+        Some(card) => {
+            let seg_name = "segment-end.mp4";
+            println!("  rendering end card ...");
+            ffmpeg::render_end_card(
+                opts.dir,
+                &card.to_string_lossy(),
+                opts.canvas,
+                ffmpeg::export_preset(),
+                seg_name,
+            )?;
+            segments.push(seg_name.to_string());
+            ffmpeg::END_CARD_SECONDS
+        }
+        None => 0.0,
+    };
+
     // The full-length narration+music mix in its own pass, so music runs continuously across
     // chapter boundaries instead of restarting per segment.
     let basename = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
@@ -285,6 +310,7 @@ fn build_chunked(
         opts.music_volume,
         opts.loudnorm,
         total,
+        pad,
         mix_name,
     )?;
 
@@ -689,6 +715,7 @@ mod tests {
             caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
             chapters: &[],
             watermark: None,
+            end_card: None,
         })
         .unwrap();
         assert!(reel.exists(), "reel.mp4 was not produced");
@@ -851,6 +878,7 @@ mod tests {
             caption_style: CaptionStyle::for_format(crate::config::Format::Youtube),
             chapters: &chapters,
             watermark: None,
+            end_card: None,
         })
         .unwrap();
         assert!(reel.exists(), "reel.mp4 was not produced");
@@ -953,6 +981,7 @@ mod tests {
             caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
             chapters: &[],
             watermark: None,
+            end_card: None,
         })
         .unwrap();
         assert!(reel.exists(), "reel.mp4 was not produced");
@@ -1053,6 +1082,7 @@ mod tests {
                 caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
                 chapters: &[],
                 watermark: None,
+                end_card: None,
             })
             .unwrap();
             assert!(reel.exists());
@@ -1188,6 +1218,7 @@ mod tests {
             caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
             chapters: &[],
             watermark: None,
+            end_card: None,
         })
         .unwrap();
         assert!(reel.exists());
@@ -1260,6 +1291,7 @@ mod tests {
             caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
             chapters: &[],
             watermark: None,
+            end_card: None,
         })
         .unwrap();
         assert!(reel.exists());
@@ -1333,6 +1365,7 @@ mod tests {
             caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
             chapters: &[],
             watermark: None,
+            end_card: None,
         })
         .unwrap();
 
@@ -1403,6 +1436,7 @@ mod tests {
             caption_style: CaptionStyle::for_format(crate::config::Format::Reel),
             chapters: &[],
             watermark: None,
+            end_card: None,
         })
         .unwrap();
 
@@ -1527,5 +1561,217 @@ mod tests {
         assert_eq!(windows, vec![(0.0, 0.5), (0.5, 1.0)]);
         let total: f64 = windows.iter().map(|(start, end)| end - start).sum();
         assert!((total - 1.0).abs() < 1e-9, "durations summed to {total}");
+    }
+
+    /// End card smoke test — NO network/API calls. Renders a single-pass reel (ducked music,
+    /// dissolves, loudnorm, watermark) and a chaptered youtube run, each with a translucent PNG end
+    /// card of a mismatched aspect ratio, then checks the length grew by the card, audio covers
+    /// it, and the final frame is the card letterboxed over black. Run explicitly with:
+    ///   cargo test end_card_smoke -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn end_card_smoke() {
+        use crate::config::{canvas, Format};
+        use crate::model::Chapter;
+        let dir = std::env::temp_dir().join("reelmaestro_end_card_smoke");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let tone = |name: &str, freq: u32, secs: u32| {
+            let path = dir.join(name);
+            let ok = Command::new("ffmpeg")
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+                .arg(format!("sine=frequency={freq}:duration={secs}"))
+                .arg(&path)
+                .status()
+                .expect("ffmpeg must be installed to run this test");
+            assert!(ok.success(), "failed to synthesize {name}");
+            path
+        };
+        let audio = tone("audio.mp3", 330, 6);
+        let music = tone("music.wav", 180, 10);
+
+        // A square card (so it letterboxes on both canvases) with an opaque orange middle band
+        // and a fully transparent remainder that must composite to black, not garbage.
+        let card = dir.join("card.png");
+        image::RgbaImage::from_fn(400, 400, |_, y| {
+            if (100..300).contains(&y) {
+                image::Rgba([255, 140, 0, 255])
+            } else {
+                image::Rgba([255, 255, 255, 0])
+            }
+        })
+        .save(&card)
+        .unwrap();
+        let watermark = dir.join("wm.png");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 255, 255, 200]))
+            .save(&watermark)
+            .unwrap();
+
+        let sc = |line: &str| Scene {
+            id: String::new(),
+            line: line.into(),
+            image_prompt: String::new(),
+            cast_ids: Vec::new(),
+            location_id: String::new(),
+            transition: "dissolve".into(),
+            motion_prompt: String::new(),
+        };
+        let scenes = vec![sc("one two three"), sc("four five six")];
+        let words: Vec<WordTiming> = (0..6)
+            .map(|i| WordTiming {
+                word: format!("w{i}"),
+                start_s: i as f64,
+                end_s: i as f64 + 0.9,
+            })
+            .collect();
+
+        let probe = |path: &Path, entries: &str, stream: &str| -> String {
+            let out = Command::new("ffprobe")
+                .args(["-v", "error", "-select_streams", stream, "-show_entries"])
+                .arg(entries)
+                .args(["-of", "csv=p=0"])
+                .arg(path)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        // Pixel at (x, y) of the frame 0.3s before the end.
+        let last_frame_px = |reel: &Path, x: u32, y: u32| -> [u8; 3] {
+            let frame = dir.join("last.png");
+            let ok = Command::new("ffmpeg")
+                .args(["-y", "-loglevel", "error", "-sseof", "-0.3", "-i"])
+                .arg(reel)
+                .args(["-frames:v", "1"])
+                .arg(&frame)
+                .status()
+                .unwrap();
+            assert!(ok.success());
+            image::open(&frame).unwrap().to_rgb8().get_pixel(x, y).0
+        };
+        // Mean volume (dB) of the reel's audio over [start, start + 0.3s).
+        let mean_db = |reel: &Path, start: f64| -> f64 {
+            let out = Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-ss",
+                    &format!("{start}"),
+                    "-t",
+                    "0.3",
+                    "-i",
+                ])
+                .arg(reel)
+                .args(["-af", "volumedetect", "-vn", "-f", "null", "-"])
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&out.stderr);
+            log.split("mean_volume: ")
+                .nth(1)
+                .and_then(|rest| rest.split(" dB").next())
+                .and_then(|db| db.trim().parse().ok())
+                .unwrap_or(f64::NEG_INFINITY)
+        };
+        let near = |got: [u8; 3], want: [u8; 3]| {
+            got.iter()
+                .zip(want)
+                .all(|(&g, w)| (g as i32 - w as i32).abs() <= 24)
+        };
+
+        for (format, chapters) in [
+            (Format::Reel, Vec::new()),
+            (
+                Format::Youtube,
+                vec![
+                    Chapter {
+                        title: "A".into(),
+                        summary: String::new(),
+                        narration: String::new(),
+                        scene_start: 0,
+                        scene_count: 1,
+                    },
+                    Chapter {
+                        title: "B".into(),
+                        summary: String::new(),
+                        narration: String::new(),
+                        scene_start: 1,
+                        scene_count: 1,
+                    },
+                ],
+            ),
+        ] {
+            let cv = canvas(format);
+            let images: Vec<PathBuf> = [[180u8, 60, 60], [60, 140, 180]]
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let p = dir.join(format!("scene-{i:02}.jpg"));
+                    image::RgbImage::from_pixel(cv.w, cv.h, image::Rgb(*c))
+                        .save(&p)
+                        .unwrap();
+                    p
+                })
+                .collect();
+            let youtube = format == Format::Youtube;
+            let reel = build(BuildOptions {
+                dir: &dir,
+                scenes: &scenes,
+                images: &images,
+                clips: &[None, None],
+                words: &words,
+                audio: &audio,
+                music: (!youtube).then_some(music.as_path()),
+                duck: true,
+                music_volume: 0.5,
+                loudnorm: !youtube,
+                captions_on: true,
+                dissolve: true,
+                dissolve_seconds: 0.5,
+                grade: true,
+                canvas: cv,
+                caption_style: CaptionStyle::for_format(format),
+                chapters: &chapters,
+                watermark: Some(&watermark),
+                end_card: Some(&card),
+            })
+            .unwrap();
+
+            let video = probe(&reel, "stream=duration", "v:0")
+                .parse::<f64>()
+                .unwrap();
+            let sound = probe(&reel, "stream=duration", "a:0")
+                .parse::<f64>()
+                .unwrap();
+            let want = 6.0 + ffmpeg::END_CARD_SECONDS;
+            assert!((video - want).abs() < 0.15, "{format:?} video {video}s");
+            assert!((sound - want).abs() < 0.15, "{format:?} audio {sound}s");
+            assert_eq!(
+                probe(&reel, "stream=width,height", "v:0"),
+                format!("{},{}", cv.w, cv.h)
+            );
+
+            // Under the card: the soundtrack plays on (before its closing fade); with no music
+            // the narration is padded with silence.
+            let card_db = mean_db(&reel, 6.1);
+            if youtube {
+                assert!(card_db < -60.0, "{format:?} card audio {card_db} dB");
+            } else {
+                assert!(card_db > -40.0, "{format:?} card audio {card_db} dB");
+            }
+
+            let (cx, cy) = (cv.w / 2, cv.h / 2);
+            let center = last_frame_px(&reel, cx, cy);
+            assert!(near(center, [255, 140, 0]), "{format:?} center {center:?}");
+            // Transparent card pixels and the letterbox are both black.
+            let side = cv.w.min(cv.h);
+            let above_band = cy - side * 3 / 8;
+            for (x, y) in [(4, 4), (cx, above_band), (cv.w - 4, cv.h - 4)] {
+                let px = last_frame_px(&reel, x, y);
+                assert!(near(px, [0, 0, 0]), "{format:?} ({x},{y}) {px:?}");
+            }
+            println!(
+                "end_card_smoke {format:?} OK -> {video:.2}s video, {sound:.2}s audio, \
+                 {card_db:.1} dB under the card"
+            );
+        }
     }
 }
