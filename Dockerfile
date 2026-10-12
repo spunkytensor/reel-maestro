@@ -31,7 +31,9 @@ RUN npm run build \
 
 FROM ${WOLFI_BASE} AS whisper-build
 ENV VIRTUAL_ENV=/opt/whisper
+# wolfi-base pins OpenSSL 4.0.2, which rejects SHA-224 that pip needs with Python 3.11.17.
 RUN apk add --no-cache python-3.11=3.11.17-r3 build-base python-3.11-dev=3.11.17-r3 \
+      openssl-4.0-libcrypto=4.0.3-r6 openssl-4.0-libssl=4.0.3-r6 \
     && python3.11 -m venv "$VIRTUAL_ENV"
 COPY docker/requirements-whisper.txt /tmp/requirements-whisper.txt
 RUN "$VIRTUAL_ENV/bin/pip" install --disable-pip-version-check --no-cache-dir \
@@ -52,6 +54,7 @@ COPY --from=media-build /sources/ /usr/share/reelmaestro/sources/
 COPY docker/build-ffmpeg.sh /usr/share/reelmaestro/sources/build-ffmpeg.sh
 RUN apk add --no-cache \
       ca-certificates nodejs-22=22.23.2-r1 python-3.11=3.11.17-r3 \
+      openssl-4.0-libcrypto=4.0.3-r6 openssl-4.0-libssl=4.0.3-r6 \
       ttf-dejavu=2.37-r9 libstdc++ libgomp \
     && apk add --no-cache --allow-untrusted /tmp/packages/ffmpeg-9.0-9.0.2-r0.apk \
     && rm -rf /tmp/packages \
