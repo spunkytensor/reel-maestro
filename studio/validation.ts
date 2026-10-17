@@ -203,6 +203,7 @@ export function validateAdvanced(value: unknown): AdvancedOptions | string {
     "posterScene",
     "embedPoster",
     "watermarkAssetId",
+    "endCardAssetId",
     "noImages",
     "verbose",
     "whisperExecutable",
@@ -233,6 +234,7 @@ export function validateAdvanced(value: unknown): AdvancedOptions | string {
     "characterReferenceAssetId",
     "musicAssetId",
     "watermarkAssetId",
+    "endCardAssetId",
   ] as const) {
     const value = input[name];
     if (value !== undefined) {

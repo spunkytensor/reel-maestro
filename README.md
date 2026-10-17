@@ -257,6 +257,15 @@ fails it falls back to a frame of the reel (`--poster-scene N` picks which scene
 Final audio is normalized in a single pass toward −14 LUFS for social-platform delivery; use
 `--no-loudnorm` to retain the original mix level.
 
+`--end-card <file>` appends a 2-second closing brand card (logo, call to action, or end slate)
+after the last scene, so the video runs 2 seconds longer. It's rendered in the same encode pass as
+the reel (a chaptered YouTube render adds a `segment-end.mp4` intermediate), and it can be added
+to an existing run for free with `--from`:
+
+```bash
+reelmaestro --from out/<run-folder> --end-card ./brand-card.png
+```
+
 ### Flags
 
 | Flag | Default | Purpose |
@@ -286,6 +295,7 @@ Final audio is normalized in a single pass toward −14 LUFS for social-platform
 | `--minutes <N>` | `3` | Target length in minutes for `--format youtube` (1-12). Drives the narration word budget, scene count, and chapter count (~1/min). |
 | `--character-ref <file>` | — | Use this photo as the recurring character across all scenes (overrides the generated portrait). |
 | `--watermark <file>` | — | Overlay a watermark (PNG with alpha) on the final video, bottom-right, auto-scaled to the format (≈16% of frame width). Works on fresh runs and `--from` resumes. |
+| `--end-card <file>` | — | Close the video with a 2-second brand card: this PNG/JPEG is fit inside the frame (never cropped) and centered over black. Transparent areas show black. The card isn't graded, captioned, or watermarked. Music keeps playing under it; narration is followed by silence. Works on fresh runs and `--from` resumes. |
 | `--no-consistency` | off | Disable automatic character-consistency conditioning. |
 | `--poster-scene <N>` | `0` | Fallback only: which scene's frame to use if custom poster generation fails (0 = hook). |
 | `--no-embed-poster` | off | Write `poster.jpg` but don't embed it as the MP4's cover art. |

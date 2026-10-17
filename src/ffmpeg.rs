@@ -277,6 +277,8 @@ pub struct RenderReelOptions<'a> {
     pub canvas: Canvas,
     /// Optional watermark image path (PNG with alpha), overlaid bottom-right, scaled to the canvas.
     pub watermark: Option<&'a str>,
+    /// Optional closing brand image, shown for `END_CARD_SECONDS` after the last scene.
+    pub end_card: Option<&'a str>,
     /// Bounded H.264 encoding profile.
     pub export_preset: ExportPreset,
     /// Output MP4 filename to write.
@@ -370,20 +372,42 @@ fn clip_chain(canvas: Canvas, i: usize, factor: f64, dur: f64, eqx: &str, tb: &s
 /// input, so a mono narration would otherwise downmix the (stereo) music to mono and discard its
 /// stereo image; the sidechain detector still takes the raw mono narration (an input stream, so
 /// ffmpeg auto-splits it). Duck mode dips the music gently under speech and recovers in gaps.
-fn audio_mix_filter(narr: &str, mus: &str, duck: bool, music_volume: f64, total: f64) -> String {
+///
+/// `total` is the full output length (music fades out over its last 1.5s). `pad` seconds of
+/// silence extend the narration so the music plays on under an end card; the padded narration is
+/// a filter output rather than an input stream, so duck mode splits it explicitly.
+fn audio_mix_filter(
+    narr: &str,
+    mus: &str,
+    duck: bool,
+    music_volume: f64,
+    total: f64,
+    pad: f64,
+) -> String {
     let fade_out = (total - 1.5).max(0.0);
     let vol = music_volume.max(0.0);
+    let (prefix, detector, voice) = if pad > 0.0 && duck {
+        (
+            format!("{narr}apad=pad_dur={pad:.3},asplit=2[nsc][nmix];"),
+            "[nsc]",
+            "[nmix]",
+        )
+    } else if pad > 0.0 {
+        (format!("{narr}apad=pad_dur={pad:.3}[nmix];"), "", "[nmix]")
+    } else {
+        (String::new(), narr, narr)
+    };
     if duck {
         format!(
-            "{mus}aformat=channel_layouts=stereo,volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[mv];\
-             [mv]{narr}sidechaincompress=threshold=0.12:ratio=2:attack=25:release=350:mix=0.6[mduck];\
-             {narr}aformat=channel_layouts=stereo[narrst];\
+            "{prefix}{mus}aformat=channel_layouts=stereo,volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[mv];\
+             [mv]{detector}sidechaincompress=threshold=0.12:ratio=2:attack=25:release=350:mix=0.6[mduck];\
+             {voice}aformat=channel_layouts=stereo[narrst];\
              [narrst][mduck]amix=inputs=2:duration=first:normalize=0[aout]"
         )
     } else {
         format!(
-            "{mus}aformat=channel_layouts=stereo,volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[m];\
-             {narr}aformat=channel_layouts=stereo[narrst];\
+            "{prefix}{mus}aformat=channel_layouts=stereo,volume={vol},afade=t=in:st=0:d=1.5,afade=t=out:st={fade_out}:d=1.5[m];\
+             {voice}aformat=channel_layouts=stereo[narrst];\
              [narrst][m]amix=inputs=2:duration=first:normalize=0[aout]"
         )
     }
@@ -394,18 +418,60 @@ fn loudnorm_filter() -> &'static str {
     "loudnorm=I=-14:TP=-1.5:LRA=11"
 }
 
+/// The audio half of a render: narration (input `narr`) alone or mixed under music (input
+/// `music`), padded with `pad` seconds of trailing silence for an end card, then optionally
+/// loudness-normalized. `total` is the full output length including `pad`. Returns the filter
+/// parts (empty when the narration maps straight through) and the stream to `-map`.
+fn audio_graph(
+    narr: usize,
+    music: Option<usize>,
+    duck: bool,
+    music_volume: f64,
+    loudnorm: bool,
+    total: f64,
+    pad: f64,
+) -> (Vec<String>, String) {
+    let narr_label = format!("[{narr}:a]");
+    let mut parts = Vec::new();
+    let mut label = if let Some(m) = music {
+        parts.push(audio_mix_filter(
+            &narr_label,
+            &format!("[{m}:a]"),
+            duck,
+            music_volume,
+            total,
+            pad,
+        ));
+        Some("[aout]")
+    } else if pad > 0.0 {
+        parts.push(format!("{narr_label}apad=pad_dur={pad:.3}[apad]"));
+        Some("[apad]")
+    } else {
+        None
+    };
+    if loudnorm {
+        let input = label.unwrap_or(&narr_label);
+        parts.push(format!("{input}{}[anorm]", loudnorm_filter()));
+        label = Some("[anorm]");
+    }
+    let map = label.map_or_else(|| format!("{narr}:a"), str::to_string);
+    (parts, map)
+}
+
 /// The video half of a render, shared by the single-pass reel and per-chapter segments:
-/// per-scene input args and the filter parts that join, caption, grade, and watermark the scenes.
+/// per-scene input args and the filter parts that join, caption, grade, watermark, and end-card
+/// the scenes.
 struct VideoGraph {
-    /// `-i` (and still-loop) args, one group per scene (input indices 0..n), plus one more `-i`
-    /// for the watermark image when present (input index n).
+    /// `-i` (and still-loop) args, one group per scene (input indices 0..n), then one more input
+    /// each for the watermark and the end card when present.
     input_args: Vec<String>,
     /// Filter parts producing the final video label.
     parts: Vec<String>,
-    /// The label to `-map` (`[vwm]` when watermarked, else `[vfinal]` when graded, else `[vout]`).
+    /// The label to `-map` (`[vend]` with an end card, else `[vwm]` when watermarked, else
+    /// `[vfinal]` when graded, else `[vout]`).
     video_map: &'static str,
-    /// Number of `-i` inputs in `input_args` (scenes + watermark). The caller appends audio
-    /// inputs after these, so audio input indices start at `input_count`.
+    /// Number of `-i` inputs in `input_args` (scenes + watermark + end card). The caller appends
+    /// audio inputs after these, so audio input indices start at `input_count`.
     input_count: usize,
 }
 
@@ -431,6 +497,36 @@ fn watermark_parts(canvas: Canvas, wm_input: usize, base: &str) -> (Vec<String>,
     (parts, "[vwm]")
 }
 
+/// How long the closing brand card stays on screen after the last scene.
+pub const END_CARD_SECONDS: f64 = 2.0;
+
+/// The looped-still input args for an end card image: exactly `END_CARD_SECONDS` of 30fps frames.
+fn end_card_input_args(image: &str) -> Vec<String> {
+    vec![
+        "-framerate".into(),
+        "30".into(),
+        "-loop".into(),
+        "1".into(),
+        "-t".into(),
+        format!("{END_CARD_SECONDS:.3}"),
+        "-i".into(),
+        image.to_string(),
+    ]
+}
+
+/// The end card chain producing `[vcard]` from input `input`: the image fit INSIDE the canvas
+/// (never cropped, so a logo or tagline stays whole), centered over black, with its alpha
+/// composited rather than dropped. Held still — no Ken Burns, grade, captions, or watermark — so the
+/// brand reads exactly as supplied. Pure so the geometry is unit-testable.
+fn end_card_chain(canvas: Canvas, input: usize) -> String {
+    let (w, h) = (canvas.w, canvas.h);
+    format!(
+        "[{input}:v]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[cardimg];\
+         color=c=black:s={w}x{h}:r=30:d={END_CARD_SECONDS:.3}[cardbg];\
+         [cardbg][cardimg]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,format=yuv420p[vcard]"
+    )
+}
+
 /// Build the scene inputs + video filtergraph: each scene (a Ken Burns still or a clip) fit to
 /// the canvas and its window, joined with cuts/cross-dissolves, captioned, and graded.
 // Mirrors the two options structs that feed it; a third struct would just rename their fields.
@@ -446,6 +542,7 @@ fn build_video_graph(
     fontsdir: Option<&str>,
     canvas: Canvas,
     watermark: Option<&str>,
+    end_card: Option<&str>,
 ) -> VideoGraph {
     let n = media.len();
 
@@ -615,6 +712,17 @@ fn build_video_graph(
         input_count += 1;
     }
 
+    // Optional end card: appended after everything above, so it carries none of the scene
+    // finishing. `concat` resamples both sides to one timebase, so it joins dissolve and cut
+    // timelines alike.
+    if let Some(card) = end_card {
+        input_args.extend(end_card_input_args(card));
+        parts.push(end_card_chain(canvas, input_count));
+        parts.push(format!("{video_map}[vcard]concat=n=2:v=1:a=0[vend]"));
+        video_map = "[vend]";
+        input_count += 1;
+    }
+
     VideoGraph {
         input_args,
         parts,
@@ -663,6 +771,7 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         fontsdir,
         canvas,
         watermark,
+        end_card,
         export_preset,
         output,
     } = opts;
@@ -678,9 +787,10 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
         fontsdir,
         canvas,
         watermark,
+        end_card,
     );
 
-    // Audio inputs follow the graph's video inputs (scenes + optional watermark).
+    // Audio inputs follow the graph's video inputs (scenes + optional watermark/end card).
     let base = graph.input_count;
     let mut args: Vec<String> = vec!["-y".into(), "-loglevel".into(), "error".into()];
     args.extend(graph.input_args);
@@ -694,28 +804,24 @@ pub fn render_reel(opts: RenderReelOptions<'_>) -> Result<()> {
     }
 
     let mut parts = graph.parts;
-    // Audio: narration alone, or mixed under a soundtrack (ducked or fixed-low).
-    let audio_map = if music.is_some() {
-        let total: f64 = durations.iter().sum();
-        parts.push(audio_mix_filter(
-            &format!("[{base}:a]"),
-            &format!("[{}:a]", base + 1),
-            duck,
-            music_volume,
-            total,
-        ));
-        if loudnorm {
-            parts.push(format!("[aout]{}[anorm]", loudnorm_filter()));
-            "[anorm]".to_string()
-        } else {
-            "[aout]".to_string()
-        }
-    } else if loudnorm {
-        parts.push(format!("[{base}:a]{}[anorm]", loudnorm_filter()));
-        "[anorm]".to_string()
+    // Audio: narration alone or mixed under a soundtrack (ducked or fixed-low), padded with
+    // silence under any end card so `-shortest` keeps the card.
+    let pad = if end_card.is_some() {
+        END_CARD_SECONDS
     } else {
-        format!("{base}:a")
+        0.0
     };
+    let total = durations.iter().sum::<f64>() + pad;
+    let (audio_parts, audio_map) = audio_graph(
+        base,
+        music.is_some().then_some(base + 1),
+        duck,
+        music_volume,
+        loudnorm,
+        total,
+        pad,
+    );
+    parts.extend(audio_parts);
 
     // Final mux/encode: the shared video encode plus broadly-compatible delivery settings:
     //   aac 192k / 44.1kHz  — standard audio for MP4.
@@ -800,6 +906,7 @@ pub fn render_segment(opts: RenderSegmentOptions<'_>) -> Result<()> {
         opts.fontsdir,
         opts.canvas,
         opts.watermark,
+        None,
     );
     let mut args: Vec<String> = vec!["-y".into(), "-loglevel".into(), "error".into()];
     args.extend(graph.input_args);
@@ -818,8 +925,35 @@ pub fn render_segment(opts: RenderSegmentOptions<'_>) -> Result<()> {
     run_ffmpeg_in(opts.dir, &args, "segment render")
 }
 
+/// Render the end card as a video-only MP4 segment with the same encode params as
+/// `render_segment`, so the chaptered concat can stream-copy it after the last chapter.
+pub fn render_end_card(
+    dir: &Path,
+    image: &str,
+    canvas: Canvas,
+    export_preset: ExportPreset,
+    output: &str,
+) -> Result<()> {
+    let mut args: Vec<String> = vec!["-y".into(), "-loglevel".into(), "error".into()];
+    args.extend(end_card_input_args(image));
+    let filter = end_card_chain(canvas, 0);
+    args.extend(
+        ["-filter_complex", &filter, "-map", "[vcard]", "-an"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    args.extend(
+        video_encode_args(export_preset)
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    args.push(output.to_string());
+    run_ffmpeg_in(dir, &args, "end card render")
+}
+
 /// Mix the full-length narration + optional looped music into one audio file (aac in an m4a),
-/// in its own pass — the chunked render muxes this over the concatenated video segments.
+/// in its own pass — the chunked render muxes this over the concatenated video segments. `pad`
+/// seconds of silence extend the narration to cover an end card segment.
 #[allow(clippy::too_many_arguments)]
 pub fn mix_audio(
     dir: &Path,
@@ -829,6 +963,7 @@ pub fn mix_audio(
     music_volume: f64,
     loudnorm: bool,
     total: f64,
+    pad: f64,
     output: &str,
 ) -> Result<()> {
     let mut args: Vec<String> = vec!["-y".into(), "-loglevel".into(), "error".into()];
@@ -837,24 +972,22 @@ pub fn mix_audio(
     if let Some(m) = music {
         args.extend(["-stream_loop", "-1", "-i"].iter().map(|s| s.to_string()));
         args.push(m.to_string());
-        args.push("-filter_complex".into());
-        let mut filter = audio_mix_filter("[0:a]", "[1:a]", duck, music_volume, total);
-        if loudnorm {
-            filter.push(';');
-            filter.push_str(&format!("[aout]{}[anorm]", loudnorm_filter()));
-            args.push(filter);
-            args.extend(["-map", "[anorm]"].iter().map(|s| s.to_string()));
-        } else {
-            args.push(filter);
-            args.extend(["-map", "[aout]"].iter().map(|s| s.to_string()));
-        }
-    } else if loudnorm {
-        args.push("-filter_complex".into());
-        args.push(format!("[0:a]{}[anorm]", loudnorm_filter()));
-        args.extend(["-map", "[anorm]"].iter().map(|s| s.to_string()));
-    } else {
-        args.extend(["-map", "0:a"].iter().map(|s| s.to_string()));
     }
+    let total = total + pad;
+    let (parts, map) = audio_graph(
+        0,
+        music.is_some().then_some(1),
+        duck,
+        music_volume,
+        loudnorm,
+        total,
+        pad,
+    );
+    if !parts.is_empty() {
+        args.push("-filter_complex".into());
+        args.push(parts.join(";"));
+    }
+    args.extend(["-map".to_string(), map]);
     args.extend(
         [
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", "-t",
@@ -960,8 +1093,8 @@ fn run_ffmpeg_in(dir: &Path, args: &[String], what: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        audio_mix_filter, clean_up_temp_on_error, clip_chain, loudnorm_filter, still_chain,
-        watermark_parts,
+        audio_graph, audio_mix_filter, clean_up_temp_on_error, clip_chain, end_card_chain,
+        loudnorm_filter, still_chain, watermark_parts,
     };
     use crate::config::Canvas;
     use anyhow::Context;
@@ -1024,10 +1157,57 @@ mod tests {
     fn mixed_audio_loudnorm_composition_targets_social_loudness() {
         let filter = format!(
             "{};[aout]{}[anorm]",
-            audio_mix_filter("[0:a]", "[1:a]", true, 0.6, 10.0),
+            audio_mix_filter("[0:a]", "[1:a]", true, 0.6, 10.0, 0.0),
             loudnorm_filter()
         );
         assert!(filter.contains("loudnorm=I=-14"));
+    }
+
+    #[test]
+    fn end_card_fits_inside_canvas_over_black() {
+        let reel = end_card_chain(REEL, 5);
+        assert!(reel.starts_with(
+            "[5:v]scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos"
+        ));
+        assert!(reel.contains("color=c=black:s=1080x1920:r=30:d=2.000[cardbg]"));
+        assert!(reel.contains("overlay=(W-w)/2:(H-h)/2:shortest=1"));
+        assert!(reel.ends_with("format=yuv420p[vcard]"));
+        assert!(end_card_chain(YT, 0).contains("color=c=black:s=1920x1080"));
+    }
+
+    #[test]
+    fn audio_without_end_card_is_unchanged() {
+        let (parts, map) = audio_graph(3, None, true, 0.6, false, 10.0, 0.0);
+        assert!(parts.is_empty());
+        assert_eq!(map, "3:a");
+        let (parts, map) = audio_graph(3, Some(4), true, 0.6, false, 10.0, 0.0);
+        assert_eq!(map, "[aout]");
+        assert!(parts[0].starts_with("[4:a]aformat"));
+        assert!(parts[0].contains("[mv][3:a]sidechaincompress"));
+        assert!(!parts[0].contains("apad"));
+    }
+
+    #[test]
+    fn end_card_pads_narration_and_holds_music_to_the_end() {
+        let (parts, map) = audio_graph(3, None, true, 0.6, false, 12.0, 2.0);
+        assert_eq!(parts, ["[3:a]apad=pad_dur=2.000[apad]"]);
+        assert_eq!(map, "[apad]");
+
+        let (parts, map) = audio_graph(3, None, true, 0.6, true, 12.0, 2.0);
+        assert_eq!(parts[1], format!("[apad]{}[anorm]", loudnorm_filter()));
+        assert_eq!(map, "[anorm]");
+
+        // Duck: the padded narration feeds both the sidechain detector and the mix.
+        let (parts, _) = audio_graph(3, Some(4), true, 0.6, false, 12.0, 2.0);
+        assert!(parts[0].starts_with("[3:a]apad=pad_dur=2.000,asplit=2[nsc][nmix];"));
+        assert!(parts[0].contains("[mv][nsc]sidechaincompress"));
+        assert!(parts[0].contains("[nmix]aformat=channel_layouts=stereo[narrst]"));
+        // Music fades out over the end of the card, not the end of the narration.
+        assert!(parts[0].contains("afade=t=out:st=10.5:d=1.5"));
+
+        let (parts, _) = audio_graph(3, Some(4), false, 0.6, false, 12.0, 2.0);
+        assert!(parts[0].starts_with("[3:a]apad=pad_dur=2.000[nmix];"));
+        assert!(!parts[0].contains("asplit"));
     }
 
     #[test]

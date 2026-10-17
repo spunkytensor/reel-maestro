@@ -281,6 +281,7 @@ Never leak the left column into the UI. Layer 2 may show model names under "Mode
 | container, Docker, bind mount, `/data/out` | not shown; "saved on this computer", "./out" only in Settings |
 | SSE reconnect, event replay | invisible; state simply stays correct |
 | poster | Poster (as cover) |
+| `--end-card` | Closing card; "shown for 2 seconds after the last scene" |
 | `youtube.md` metadata | Description and chapters |
 
 Copy rules: plain verbs, sentence case, no filler, no arrows appended to links or buttons, no

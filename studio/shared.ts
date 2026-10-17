@@ -101,6 +101,7 @@ export type AdvancedOptions = {
   posterScene?: number;
   embedPoster?: boolean;
   watermarkAssetId?: string;
+  endCardAssetId?: string;
   noImages?: boolean;
   verbose?: boolean;
   whisperExecutable?: "whisper_timestamped";
