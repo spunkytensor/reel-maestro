@@ -53,7 +53,8 @@ COPY --from=media-build /packages/ /tmp/packages/
 COPY --from=media-build /sources/ /usr/share/reelmaestro/sources/
 COPY docker/build-ffmpeg.sh /usr/share/reelmaestro/sources/build-ffmpeg.sh
 RUN apk add --no-cache \
-      ca-certificates nodejs-22=22.23.2-r1 python-3.11=3.11.17-r3 \
+      ca-certificates ca-certificates-bundle=20260909-r3 \
+      nodejs-22=22.23.2-r1 python-3.11=3.11.17-r3 \
       openssl-4.0-libcrypto=4.0.3-r6 openssl-4.0-libssl=4.0.3-r6 \
       ttf-dejavu=2.37-r9 libstdc++ libgomp \
     && apk add --no-cache --allow-untrusted /tmp/packages/ffmpeg-9.0-9.0.2-r0.apk \
