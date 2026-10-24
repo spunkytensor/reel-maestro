@@ -394,7 +394,13 @@ fn sha256(path: &Path) -> String {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).unwrap();
     use sha2::{Digest, Sha256};
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
 }
 
 #[test]

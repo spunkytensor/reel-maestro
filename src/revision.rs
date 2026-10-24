@@ -1844,10 +1844,22 @@ fn hash_file(path: &Path) -> Result<String> {
         }
         h.update(&b[..n]);
     }
-    Ok(format!("sha256:{:x}", h.finalize()))
+    Ok(format!(
+        "sha256:{}",
+        h.finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    ))
 }
 fn hash_bytes(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
 }
 fn hash_json(value: &impl Serialize) -> Result<String> {
     Ok(hash_bytes(&serde_json::to_vec(value)?))
