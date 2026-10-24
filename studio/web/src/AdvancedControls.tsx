@@ -265,6 +265,14 @@ export function AdvancedControls({
             onBusyChange={onBusyChange}
             onChange={(asset) => change("watermarkAssetId", asset?.id)}
           />
+          <UploadField
+            label="Closing card (optional)"
+            kind="image"
+            value={value.endCardAssetId}
+            onBusyChange={onBusyChange}
+            onChange={(asset) => change("endCardAssetId", asset?.id)}
+            hint="Your logo or brand image, shown for 2 seconds after the last scene."
+          />
         </div>
       </details>
       <details>

@@ -50,6 +50,7 @@ temporary media files:
 cargo test render_smoke -- --ignored --nocapture
 cargo test music_mix_smoke -- --ignored --nocapture
 cargo test video_mode_smoke -- --ignored --nocapture
+cargo test end_card_smoke -- --ignored --nocapture
 ```
 
 End-to-end runs call paid model APIs. Only run them intentionally, with your own

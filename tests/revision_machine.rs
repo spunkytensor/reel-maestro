@@ -258,6 +258,8 @@ fn local_revision_reorders_copied_stills_removes_music_and_publishes_valid_video
     write_color_jpeg(&source.join("scene-00.jpg"), "red");
     write_color_jpeg(&source.join("scene-01.jpg"), "blue");
     write_color_jpeg(&source.join("poster.jpg"), "green");
+    let end_card = root.join("brand.jpg");
+    write_color_jpeg(&end_card, "orange");
     fs::write(source.join("music.wav"), b"must not be copied").unwrap();
     let red_hash = sha256(&source.join("scene-00.jpg"));
     let blue_hash = sha256(&source.join("scene-01.jpg"));
@@ -270,7 +272,7 @@ fn local_revision_reorders_copied_stills_removes_music_and_publishes_valid_video
         "script":edited,
         "arguments":["--no-narration","--scene-seconds","1","--no-captions",
           "--music-action","remove","--no-grade","--no-loudnorm","--no-dissolve",
-          "--no-embed-poster","--export-preset","web"],
+          "--no-embed-poster","--export-preset","web","--end-card",end_card],
         "job_id":"offline-zero-provider-calls"
     });
     let (output, value) = plan(&root, request);
@@ -310,6 +312,24 @@ fn local_revision_reorders_copied_stills_removes_music_and_publishes_valid_video
     assert_eq!(sha256(&destination.join("scene-01.jpg")), red_hash);
     assert!(!destination.join("music.wav").exists());
     assert!(destination.join("reel.mp4").is_file());
+    // Two 1s scenes plus the 2s closing card.
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(destination.join("reel.mp4"))
+        .output()
+        .unwrap();
+    let duration: f64 = String::from_utf8_lossy(&probe.stdout)
+        .trim()
+        .parse()
+        .unwrap();
+    assert!((duration - 4.0).abs() < 0.15, "reel is {duration}s");
     assert_eq!(
         Path::new(completed["artifact"].as_str().unwrap()),
         destination.join("reel.mp4")
@@ -339,6 +359,15 @@ fn local_revision_reorders_copied_stills_removes_music_and_publishes_valid_video
     assert_eq!(inherited["resolved_config"]["no_captions"], true);
     assert_eq!(inherited["resolved_config"]["scene_seconds"], 1.0);
     assert_eq!(inherited["resolved_config"]["export_preset"], "web");
+    assert_eq!(
+        Path::new(inherited["resolved_config"]["end_card"].as_str().unwrap()),
+        fs::canonicalize(&end_card).unwrap()
+    );
+    assert!(inherited["request"]["arguments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|argument| argument == "--end-card"));
     let inherited_still = inherited["actions"]
         .as_array()
         .unwrap()

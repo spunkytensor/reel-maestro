@@ -42,6 +42,7 @@ Ignored render-path checks require `ffmpeg`/`ffprobe` and produce temporary medi
 cargo test render_smoke -- --ignored --nocapture
 cargo test music_mix_smoke -- --ignored --nocapture
 cargo test video_mode_smoke -- --ignored --nocapture
+cargo test end_card_smoke -- --ignored --nocapture
 ```
 
 ## Source map
