@@ -253,13 +253,13 @@ fn local_fingerprint(
     image: Option<&[u8]>,
 ) -> Result<String> {
     Ok(format!(
-        "sha256:{:x}",
+        "sha256:{}",
         Sha256::digest(serde_json::to_vec(&json!({
             "input_mode": format!("{:?}", cfg.video_input_mode),
             "model": "local/minimax-h3", "prompt": prompt, "duration": duration,
             "size": size, "seed": cfg.video_seed, "steps": cfg.video_steps,
-            "image_sha256": image.map(Sha256::digest).map(|value| format!("{value:x}"))
-        }))?)
+            "image_sha256": image.map(Sha256::digest).map(|value| value.iter().map(|b| format!("{b:02x}")).collect::<String>())
+        }))?).iter().map(|b| format!("{b:02x}")).collect::<String>()
     ))
 }
 
@@ -333,10 +333,10 @@ pub(super) async fn generate_local_clip(
                 let canonical = std::fs::canonicalize(dir)?;
                 let mut nonce = [0_u8; 16];
                 std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut nonce)?;
-                let path_hash = format!(
-                    "{:x}",
-                    Sha256::digest(canonical.to_string_lossy().as_bytes())
-                );
+                let path_hash = Sha256::digest(canonical.to_string_lossy().as_bytes())
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
                 format!(
                     "reelmaestro-{scene}-{}-{}",
                     path_hash,
