@@ -46,9 +46,9 @@ export async function api<T>(url: string, body?: unknown): Promise<T> {
     const value: unknown = await response.json().catch(() => undefined);
     throw new Error(
       value &&
-      typeof value === "object" &&
-      "error" in value &&
-      typeof value.error === "string"
+        typeof value === "object" &&
+        "error" in value &&
+        typeof value.error === "string"
         ? value.error
         : "That action could not be completed. Please try again.",
     );
