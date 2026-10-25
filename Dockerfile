@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG WOLFI_BASE=cgr.dev/chainguard/wolfi-base@sha256:42c1bedc56d25685b394a7a860817feb3641bae4121681697a6237290472ba11
+ARG WOLFI_BASE=cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
 
 FROM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS rust-build
 WORKDIR /build
@@ -16,7 +16,7 @@ COPY docker/build-ffmpeg.sh /build-ffmpeg.sh
 COPY docker/ffmpeg-loudnorm-silence.patch /ffmpeg-loudnorm-silence.patch
 RUN sh /build-ffmpeg.sh
 
-FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS studio-build
+FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS studio-build
 WORKDIR /build/studio
 COPY studio/package.json studio/package-lock.json ./
 RUN npm ci
@@ -31,7 +31,7 @@ RUN npm run build \
 
 FROM ${WOLFI_BASE} AS whisper-build
 ENV VIRTUAL_ENV=/opt/whisper
-# wolfi-base pins OpenSSL 4.0.2, which rejects SHA-224 that pip needs with Python 3.11.17.
+# Keep OpenSSL's SHA-224 fix required by pip with Python 3.11.17.
 RUN apk add --no-cache python-3.11=3.11.17-r3 build-base python-3.11-dev=3.11.17-r3 \
       openssl-4.0-libcrypto=4.0.3-r6 openssl-4.0-libssl=4.0.3-r6 \
     && python3.11 -m venv "$VIRTUAL_ENV"
@@ -54,7 +54,7 @@ COPY --from=media-build /sources/ /usr/share/reelmaestro/sources/
 COPY docker/build-ffmpeg.sh /usr/share/reelmaestro/sources/build-ffmpeg.sh
 RUN apk add --no-cache \
       ca-certificates ca-certificates-bundle=20260909-r3 \
-      nodejs-22=22.23.2-r1 python-3.11=3.11.17-r3 \
+      nodejs-24=24.22.1-r2 python-3.11=3.11.17-r3 \
       openssl-4.0-libcrypto=4.0.3-r6 openssl-4.0-libssl=4.0.3-r6 \
       ttf-dejavu=2.37-r9 libstdc++ libgomp \
     && apk add --no-cache --allow-untrusted /tmp/packages/ffmpeg-9.0-9.0.2-r0.apk \
