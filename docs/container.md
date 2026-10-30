@@ -176,7 +176,7 @@ Rust uses `Cargo.lock`, Studio uses `package-lock.json`, Python requirements are
 the base images and default model are digest/checksum pinned. CI builds and smoke-tests the image,
 runs the Node production dependency audit, and scans the resulting OS/application image for
 High/Critical known vulnerabilities, including unfixed findings. Locally, reproduce
-the vulnerability gate with Trivy 0.74.0 installed:
+the vulnerability gate with Trivy 0.76.1 installed:
 
 ```sh
 npm --prefix studio audit --omit=dev --audit-level=high
