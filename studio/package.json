@@ -21,12 +21,12 @@
     "@fastify/static": "10.1.6",
     "fastify": "5.12.6",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
     "@types/node": "22.19.0",
     "@types/react": "19.3.0",
-    "@types/react-dom": "19.2.2",
+    "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "5.2.0",
     "esbuild": "0.28.2",
     "playwright-core": "1.63.0",
