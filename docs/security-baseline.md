@@ -4,13 +4,13 @@ Owner: Spunky Tensor maintainers. Supported versions remain the latest release a
 `main` until 1.0, as specified in [SECURITY.md](../SECURITY.md). No licensing or
 support contract is changed by this rollout.
 
-Baseline: [ed53814ed23f76c11fa4a91f57f99de903c18bfc](https://github.com/spunkytensor/.github/commit/ed53814ed23f76c11fa4a91f57f99de903c18bfc).
+Baseline: [2a2d755bd3279917e687d9109489bebadeab4c50](https://github.com/spunkytensor/.github/commit/2a2d755bd3279917e687d9109489bebadeab4c50).
 This is partial implementation, not a compliance certification.
 
 ## Delivered checks and evidence
 
 - [Spunky Tensor security](https://github.com/spunkytensor/reel-maestro/actions/workflows/public-repo-security.yml)
-  calls the SHA-pinned shared Trivy 0.74.0 workflow on PRs, main pushes, and nightly
+  calls the SHA-pinned shared Trivy 0.76.1 workflow on PRs, main pushes, and nightly
   at **09:09 UTC** (01:09 PST / 02:09 PDT). Source scans include development
   dependencies. Registry Cargo and npm lockfile package/version pairs are reconciled
   against the report; a missing package fails coverage.
