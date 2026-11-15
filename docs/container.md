@@ -9,7 +9,7 @@ The runtime uses Wolfi's glibc packages with Node 24 LTS and Python 3.11. Node 2
 replaces Node 22 because Wolfi's public Node 22 package has not yet incorporated
 the October 2026 security fixes. The runtime pins Wolfi's Node 24.22.3 package,
 which fixes the HTTP/2 denial-of-service CVE-2026-123863. The Studio build stage
-uses the official Node 24.22.1 image, which the runtime image does not include. The pinned
+uses the official Node 24.22.3 image, which the runtime image does not include. The pinned
 Wolfi base also includes patched Brotli and glibc packages.
 
 FFmpeg 9.0.2 is compiled with libass, x264, and MP3 support and installed as a local APK, so it
