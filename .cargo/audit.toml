@@ -8,6 +8,4 @@
 # by crate; here, add each new RUSTSEC id for a quinn crate as it appears. Revisit if we ever
 # enable reqwest's `http3` feature.
 [advisories]
-ignore = [
-    "RUSTSEC-2026-0185",  # quinn-proto memory exhaustion (also patched via 0.11.15 bump)
-]
+ignore = []
